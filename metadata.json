@@ -1,0 +1,8 @@
+{
+  "name": "LinguaForge",
+  "description": "Offline-first, local-first language learning Progressive Web App with interactive smart reader, dictionary lookups, and language pack management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
