@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import type { DictionaryEntry, LanguagePack, Token } from '../../core/languagePack';
 import { db, type WordStatusType } from '../../db/db';
 import { useAppStore } from '../../store/useAppStore';
@@ -11,9 +11,10 @@ import {
   Sparkles,
   Layers,
   GitFork,
-  HelpCircle,
   Pin,
 } from 'lucide-react';
+import { FuriganaText } from '../../ui/FuriganaText';
+import { deriveFrequencyInfo } from '../../packs/japanese/jmdictFrequency';
 
 interface WordPopupProps {
   token: Token;
@@ -44,18 +45,69 @@ export const WordPopup: React.FC<WordPopupProps> = ({
   const [activeTab, setActiveTab] = useState<'meanings' | 'grammar' | 'kanji' | 'examples'>('meanings');
   const [addedToCards, setAddedToCards] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [selectedEntryIndex, setSelectedEntryIndex] = useState(0);
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'words' | 'names' | 'kanji' | 'examples'>('all');
+
+  const grouped = entry?.groupedResults;
+  const hasMultipleSources = useMemo(() => {
+    if (!grouped) return false;
+    const nonEmptyGroups = [
+      grouped.words.length > 0,
+      grouped.names.length > 0,
+      grouped.kanji.length > 0,
+      grouped.examples.length > 0,
+    ].filter(Boolean).length;
+    return nonEmptyGroups > 1;
+  }, [grouped]);
+
+  // Collect entries ranked by source / priority
+  const entriesList = useMemo(() => {
+    const all = entry?.allEntries || (entry ? [entry] : []);
+    if (sourceFilter === 'all') return all.slice(0, 8);
+    if (grouped && grouped[sourceFilter]) {
+      return grouped[sourceFilter].slice(0, 8);
+    }
+    return all.filter((e) => e.sourceKind === sourceFilter).slice(0, 8);
+  }, [entry, grouped, sourceFilter]);
+
+  // Reset selected entry index when token or entry changes
+  useEffect(() => {
+    setSelectedEntryIndex(0);
+    setSourceFilter('all');
+  }, [token.id, entry?.id]);
+
+  const activeEntryData = entriesList[selectedEntryIndex] || entry;
 
   // Lemma is dictionary form (baseForm) first, fallback to surface
-  const lemma = entry?.word || token.baseForm || token.surface;
+  const lemma = activeEntryData?.word || entry?.word || token.baseForm || token.surface;
   const currentStatus = wordStatuses[lemma] || wordStatuses[token.surface] || 'new';
 
-  const readings = entry?.readings || (token.reading ? [token.reading] : []);
-  const meanings = entry?.meanings || [];
-  const pos = entry?.partsOfSpeech?.join(', ') || token.partOfSpeech || 'Word';
-  const level = entry?.level || token.level;
-  const frequency = entry?.frequencyRank || token.frequencyRank;
+  const rawReadings = activeEntryData?.readings || entry?.readings || (token.reading ? [token.reading] : []);
+  // Filter out any readings that simply echo the kanji surface text without kana pronunciation
+  const validReadings = rawReadings.filter(
+    (r) => r && r !== lemma && r !== token.surface && !/[\u4e00-\u9faf\u3400-\u4dbf々〆〇]/.test(r)
+  );
+
+  const meanings = activeEntryData?.meanings || entry?.meanings || [];
+  const pos =
+    activeEntryData?.partsOfSpeech?.join(', ') ||
+    entry?.partsOfSpeech?.join(', ') ||
+    token.partOfSpeech ||
+    'Word';
+  const level = activeEntryData?.level || entry?.level || token.level;
+  const frequency = activeEntryData?.frequencyRank || entry?.frequencyRank || token.frequencyRank;
+  const priorityTags = activeEntryData?.priorityTags || entry?.priorityTags || [];
+  const priorityBadge = activeEntryData?.priorityBadge || entry?.priorityBadge;
+
+  const freqInfo = useMemo(() => {
+    return deriveFrequencyInfo(priorityTags, frequency);
+  }, [priorityTags, frequency]);
+
+  const effectiveFrequencyBand = activeEntryData?.frequencyBand || entry?.frequencyBand || freqInfo.frequencyBand;
+  const effectivePriorityBadge = priorityBadge || freqInfo.priorityBadge;
   const kanjiList = entry?.kanjiBreakdown || [];
   const examples = entry?.examples || [];
+  const isSampleFallback = activeEntryData?.isSampleFallback ?? entry?.isSampleFallback ?? true;
 
   const components = token.components || entry?.grammarComponents || [];
   const hasGrammarBreakdown = components.length > 1;
@@ -80,11 +132,32 @@ export const WordPopup: React.FC<WordPopupProps> = ({
 
   const handleAddToFlashcards = async () => {
     try {
+      const validReading =
+        validReadings[0] ||
+        (token.reading &&
+        token.reading !== token.surface &&
+        !/[\u4e00-\u9faf\u3400-\u4dbf々〆〇]/.test(token.reading)
+          ? token.reading
+          : '');
+
+      let sentenceFurigana: any = undefined;
+      if (surroundingSentence) {
+        try {
+          const sentenceTokens = await pack.tokenize(surroundingSentence);
+          sentenceFurigana = sentenceTokens.flatMap((t) => t.furiganaSegments || [{ text: t.surface }]);
+        } catch {
+          // ignore
+        }
+      }
+
       await db.flashcards.add({
-        word: lemma,
-        reading: readings[0] || lemma,
-        meaning: meanings.join('; ') || 'Definition from reader',
+        word: token.surface,
+        lemma,
+        reading: validReading,
+        furiganaSegments: token.furiganaSegments,
         sentence: surroundingSentence,
+        sentenceFuriganaSegments: sentenceFurigana,
+        meaning: meanings.join('; ') || 'Definition from reader',
         languageId: pack.id,
         sourceDocTitle: documentTitle,
         level,
@@ -102,17 +175,30 @@ export const WordPopup: React.FC<WordPopupProps> = ({
     <div
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
-      className="w-full max-w-sm sm:max-w-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden text-slate-900 dark:text-slate-100 animate-in fade-in zoom-in-95 duration-100 text-left select-none"
+      className="w-full max-w-sm sm:max-w-md bg-[var(--surface)] border border-[var(--border)] rounded-2xl shadow-2xl overflow-hidden text-[var(--text)] animate-in fade-in zoom-in-95 duration-100 text-left select-none"
     >
       {/* Header */}
-      <div className="p-4 bg-gradient-to-r from-indigo-50/90 to-purple-50/90 dark:from-slate-800/90 dark:to-indigo-950/40 border-b border-slate-200 dark:border-slate-800">
+      <div className="p-4 bg-[var(--surface-muted)]/60 border-b border-[var(--border)]">
         <div className="flex items-start justify-between gap-3">
           <div className="space-y-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              {/* Primary Dictionary Form (Lemma) */}
-              <span className="text-2xl font-bold font-sans tracking-wide text-indigo-900 dark:text-indigo-200">
-                {lemma}
-              </span>
+              {/* Primary Dictionary Form with Ruby Furigana */}
+              <div className="text-2xl font-bold font-sans text-indigo-900 dark:text-indigo-200">
+                {token.furiganaSegments && token.furiganaSegments.length > 0 ? (
+                  <FuriganaText
+                    segments={token.furiganaSegments}
+                    furiganaMode="always"
+                    rtClassName="text-xs font-semibold text-indigo-600 dark:text-indigo-400"
+                  />
+                ) : (
+                  <FuriganaText
+                    text={lemma}
+                    reading={validReadings[0]}
+                    furiganaMode="always"
+                    rtClassName="text-xs font-semibold text-indigo-600 dark:text-indigo-400"
+                  />
+                )}
+              </div>
 
               {/* Note if surface in text is a conjugated form */}
               {token.surface !== lemma && (
@@ -136,22 +222,61 @@ export const WordPopup: React.FC<WordPopupProps> = ({
                 {currentStatus}
               </span>
 
-              {level && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold bg-sky-100 text-sky-800 dark:bg-sky-950/80 dark:text-sky-300">
-                  {level}
+              {/* JLPT Level: N5-N1 or "No level" */}
+              {level && /^N[1-5]$/i.test(level) ? (
+                <span
+                  className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
+                    level.toUpperCase() === 'N5'
+                      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800'
+                      : level.toUpperCase() === 'N4'
+                      ? 'bg-sky-100 text-sky-800 dark:bg-sky-950/80 dark:text-sky-300 border-sky-300 dark:border-sky-800'
+                      : level.toUpperCase() === 'N3'
+                      ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300 border-amber-300 dark:border-amber-800'
+                      : level.toUpperCase() === 'N2'
+                      ? 'bg-orange-100 text-orange-800 dark:bg-orange-950/80 dark:text-orange-300 border-orange-300 dark:border-orange-800'
+                      : 'bg-rose-100 text-rose-800 dark:bg-rose-950/80 dark:text-rose-300 border-rose-300 dark:border-rose-800'
+                  }`}
+                >
+                  {level.toUpperCase()}
+                </span>
+              ) : (
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 border border-slate-200 dark:border-slate-700">
+                  No level
                 </span>
               )}
 
+              {/* Frequency Band Badge */}
+              {effectiveFrequencyBand && (
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-purple-100 text-purple-800 dark:bg-purple-950/90 dark:text-purple-300 border border-purple-200 dark:border-purple-800">
+                  {effectiveFrequencyBand}
+                </span>
+              )}
+
+              {/* Priority Badge: "Common (news1, nf08)" or "Uncommon" */}
+              {effectivePriorityBadge && (
+                <span
+                  className={`text-[10px] px-2 py-0.5 rounded-full font-medium border ${
+                    effectivePriorityBadge.startsWith('Common')
+                      ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/70 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800 font-semibold'
+                      : 'bg-slate-100 text-slate-600 dark:bg-slate-800/80 dark:text-slate-400 border border-slate-200 dark:border-slate-700'
+                  }`}
+                >
+                  {effectivePriorityBadge}
+                </span>
+              )}
+
+              {/* Exact Frequency Rank if available */}
               {frequency && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 font-mono">
-                  #{frequency}
+                  #{frequency.toLocaleString()}
                 </span>
               )}
             </div>
 
-            {readings.length > 0 && (
-              <div className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 flex items-center gap-2">
-                <span>{readings.join(' • ')}</span>
+            {/* Reading line: only rendered if a valid non-repeating reading is available */}
+            {validReadings.length > 0 && (
+              <div className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 flex items-center gap-2 pt-0.5">
+                <span>{validReadings.join(' • ')}</span>
                 <button
                   onClick={() => handleSpeak(token.surface || lemma)}
                   title="Pronounce with native voice"
@@ -159,6 +284,106 @@ export const WordPopup: React.FC<WordPopupProps> = ({
                 >
                   <Volume2 className={`w-3.5 h-3.5 ${isSpeaking ? 'animate-bounce text-emerald-500' : ''}`} />
                 </button>
+              </div>
+            )}
+
+            {/* Source group filter (Words, Names, Kanji, Examples) when results exist from multiple sources */}
+            {hasMultipleSources && grouped && (
+              <div className="flex items-center gap-1 pt-1.5 mt-1 border-t border-slate-200/50 dark:border-slate-800/60 flex-wrap">
+                <span className="text-[10px] font-bold text-slate-400">Source:</span>
+                <button
+                  onClick={() => { setSourceFilter('all'); setSelectedEntryIndex(0); }}
+                  className={`text-[10px] px-2 py-0.5 rounded-full font-bold transition ${
+                    sourceFilter === 'all'
+                      ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200'
+                  }`}
+                >
+                  All ({entry?.allEntries?.length || entriesList.length})
+                </button>
+                {grouped.words.length > 0 && (
+                  <button
+                    onClick={() => { setSourceFilter('words'); setSelectedEntryIndex(0); }}
+                    className={`text-[10px] px-2 py-0.5 rounded-full font-bold transition ${
+                      sourceFilter === 'words'
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100'
+                    }`}
+                  >
+                    Words ({grouped.words.length})
+                  </button>
+                )}
+                {grouped.names.length > 0 && (
+                  <button
+                    onClick={() => { setSourceFilter('names'); setSelectedEntryIndex(0); }}
+                    className={`text-[10px] px-2 py-0.5 rounded-full font-bold transition ${
+                      sourceFilter === 'names'
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100'
+                    }`}
+                  >
+                    Names ({grouped.names.length})
+                  </button>
+                )}
+                {grouped.kanji.length > 0 && (
+                  <button
+                    onClick={() => { setSourceFilter('kanji'); setSelectedEntryIndex(0); }}
+                    className={`text-[10px] px-2 py-0.5 rounded-full font-bold transition ${
+                      sourceFilter === 'kanji'
+                        ? 'bg-amber-600 text-white'
+                        : 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 hover:bg-amber-100'
+                    }`}
+                  >
+                    Kanji ({grouped.kanji.length})
+                  </button>
+                )}
+                {grouped.examples.length > 0 && (
+                  <button
+                    onClick={() => { setSourceFilter('examples'); setSelectedEntryIndex(0); }}
+                    className={`text-[10px] px-2 py-0.5 rounded-full font-bold transition ${
+                      sourceFilter === 'examples'
+                        ? 'bg-purple-600 text-white'
+                        : 'bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 hover:bg-purple-100'
+                    }`}
+                  >
+                    Examples ({grouped.examples.length})
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Multiple entries selector (ranked entries) */}
+            {entriesList.length > 1 && (
+              <div className="flex items-center gap-1.5 pt-1.5 mt-1 border-t border-slate-200/50 dark:border-slate-800/60 flex-wrap">
+                <span className="text-[10px] font-bold text-slate-400">Entries ({entriesList.length}):</span>
+                {entriesList.map((ent, idx) => (
+                  <button
+                    key={ent.id || idx}
+                    onClick={() => setSelectedEntryIndex(idx)}
+                    className={`text-[10px] px-2 py-0.5 rounded-md font-bold transition flex items-center gap-1 ${
+                      selectedEntryIndex === idx
+                        ? 'bg-indigo-600 text-white shadow-xs'
+                        : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
+                    }`}
+                  >
+                    {ent.sourceKind && ent.sourceKind !== 'dictionary' && (
+                      <span className={`text-[9px] uppercase px-1 rounded font-semibold ${
+                        ent.sourceKind === 'names'
+                          ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                          : ent.sourceKind === 'kanji'
+                          ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                          : 'bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300'
+                      }`}>
+                        {ent.sourceKind === 'names' ? 'Name' : ent.sourceKind}
+                      </span>
+                    )}
+                    <span>#{idx + 1}</span>
+                    <span>{ent.word}</span>
+                    {ent.readings[0] && ent.readings[0] !== ent.word && (
+                      <span className="opacity-75 font-normal">({ent.readings[0]})</span>
+                    )}
+                  </button>
+                ))}
               </div>
             )}
           </div>
@@ -201,7 +426,7 @@ export const WordPopup: React.FC<WordPopupProps> = ({
           }`}
         >
           <BookOpen className="w-3.5 h-3.5" />
-          Definition
+          Definition ({meanings.length})
         </button>
 
         {hasGrammarBreakdown && (
@@ -271,7 +496,6 @@ export const WordPopup: React.FC<WordPopupProps> = ({
                 {entry.grammarNotes.join(' ')}
               </div>
             )}
-
             {surroundingSentence && (
               <div className="mt-3 p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg text-xs">
                 <span className="text-slate-400 font-semibold block mb-0.5">Context:</span>
@@ -405,6 +629,17 @@ export const WordPopup: React.FC<WordPopupProps> = ({
           >
             Learning
           </button>
+
+          {/* Dictionary Source Indicator */}
+          {isSampleFallback ? (
+            <span className="text-[10px] text-amber-700 dark:text-amber-300 font-semibold bg-amber-50 dark:bg-amber-950/60 px-2 py-0.5 rounded border border-amber-200 dark:border-amber-800">
+              Dictionary: sample only
+            </span>
+          ) : (
+            <span className="text-[10px] text-indigo-700 dark:text-indigo-300 font-semibold bg-indigo-50 dark:bg-indigo-950/60 px-2 py-0.5 rounded border border-indigo-200 dark:border-indigo-800">
+              Dictionary: JMdict
+            </span>
+          )}
         </div>
 
         <button

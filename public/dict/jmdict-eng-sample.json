@@ -1,0 +1,806 @@
+{
+  "version": "3.5.0",
+  "languages": ["eng"],
+  "commonOnly": true,
+  "dictDate": "2026-03-01",
+  "words": [
+    {
+      "id": "1520440",
+      "kanji": [
+        {
+          "common": true,
+          "text": "日本",
+          "tags": ["news1", "ichi1", "nf01"]
+        }
+      ],
+      "kana": [
+        {
+          "common": true,
+          "text": "にほん",
+          "tags": ["news1", "ichi1"],
+          "appliesToKanji": ["*"]
+        },
+        {
+          "common": true,
+          "text": "にっぽん",
+          "tags": ["news1", "ichi1"],
+          "appliesToKanji": ["*"]
+        }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "Japan" },
+            { "type": null, "text": "Nihon" },
+            { "type": null, "text": "Nippon" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1184390",
+      "kanji": [
+        {
+          "common": true,
+          "text": "桜",
+          "tags": ["news1", "ichi1", "nf09"]
+        },
+        {
+          "common": false,
+          "text": "櫻",
+          "tags": []
+        }
+      ],
+      "kana": [
+        {
+          "common": true,
+          "text": "さくら",
+          "tags": ["news1", "ichi1"],
+          "appliesToKanji": ["*"]
+        }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "cherry tree" },
+            { "type": null, "text": "cherry blossom" },
+            { "type": null, "text": "sakura" }
+          ]
+        },
+        {
+          "partOfSpeech": ["noun"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "decoy" },
+            { "type": null, "text": "fake buyer" },
+            { "type": null, "text": "shill" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1283620",
+      "kanji": [
+        {
+          "common": true,
+          "text": "公園",
+          "tags": ["news1", "ichi1", "nf05"]
+        }
+      ],
+      "kana": [
+        {
+          "common": true,
+          "text": "こうえん",
+          "tags": ["news1", "ichi1"],
+          "appliesToKanji": ["*"]
+        }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "public park" },
+            { "type": null, "text": "public garden" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1547280",
+      "kanji": [
+        {
+          "common": true,
+          "text": "見られる",
+          "tags": ["ichi1"]
+        }
+      ],
+      "kana": [
+        {
+          "common": true,
+          "text": "みられる",
+          "tags": ["ichi1"],
+          "appliesToKanji": ["*"]
+        }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["ichidan verb", "intransitive verb"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": ["potential or passive form of 見る"],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "to be seen" },
+            { "type": null, "text": "to be in sight" },
+            { "type": null, "text": "to be visible" },
+            { "type": null, "text": "to be found" },
+            { "type": null, "text": "to be able to see" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1259290",
+      "kanji": [
+        {
+          "common": true,
+          "text": "見る",
+          "tags": ["news1", "ichi1", "nf01"]
+        },
+        {
+          "common": false,
+          "text": "観る",
+          "tags": []
+        },
+        {
+          "common": false,
+          "text": "視る",
+          "tags": []
+        }
+      ],
+      "kana": [
+        {
+          "common": true,
+          "text": "みる",
+          "tags": ["news1", "ichi1"],
+          "appliesToKanji": ["*"]
+        }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["ichidan verb", "transitive verb"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "to see" },
+            { "type": null, "text": "to look at" },
+            { "type": null, "text": "to watch" },
+            { "type": null, "text": "to view" }
+          ]
+        },
+        {
+          "partOfSpeech": ["ichidan verb", "transitive verb"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "to examine" },
+            { "type": null, "text": "to inspect" },
+            { "type": null, "text": "to assess" }
+          ]
+        },
+        {
+          "partOfSpeech": ["ichidan verb", "transitive verb"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": ["after -te verb form"],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "to try doing" },
+            { "type": null, "text": "to attempt" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1311020",
+      "kanji": [
+        {
+          "common": true,
+          "text": "四季",
+          "tags": ["news1", "nf15"]
+        }
+      ],
+      "kana": [
+        {
+          "common": true,
+          "text": "しき",
+          "tags": ["news1"],
+          "appliesToKanji": ["*"]
+        }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "four seasons" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1324780",
+      "kanji": [
+        {
+          "common": true,
+          "text": "春",
+          "tags": ["news1", "ichi1", "nf05"]
+        }
+      ],
+      "kana": [
+        {
+          "common": true,
+          "text": "はる",
+          "tags": ["news1", "ichi1"],
+          "appliesToKanji": ["*"]
+        }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "spring" },
+            { "type": null, "text": "springtime" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1391960",
+      "kanji": [
+        {
+          "common": true,
+          "text": "人々",
+          "tags": ["news1", "ichi1", "nf03"]
+        }
+      ],
+      "kana": [
+        {
+          "common": true,
+          "text": "ひとびと",
+          "tags": ["news1", "ichi1"],
+          "appliesToKanji": ["*"]
+        }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "people" },
+            { "type": null, "text": "men and women" },
+            { "type": null, "text": "everybody" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1284140",
+      "kanji": [
+        {
+          "common": true,
+          "text": "紅葉",
+          "tags": ["news1", "nf25"]
+        }
+      ],
+      "kana": [
+        {
+          "common": true,
+          "text": "こうよう",
+          "tags": ["news1"],
+          "appliesToKanji": ["*"]
+        },
+        {
+          "common": true,
+          "text": "もみじ",
+          "tags": ["news1"],
+          "appliesToKanji": ["*"]
+        }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun", "suru verb"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "autumn colours" },
+            { "type": null, "text": "fall foliage" },
+            { "type": null, "text": "red leaves" }
+          ]
+        },
+        {
+          "partOfSpeech": ["noun"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["もみじ"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "Japanese maple" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1184490",
+      "kanji": [
+        {
+          "common": true,
+          "text": "花見",
+          "tags": ["news1", "nf22"]
+        },
+        {
+          "common": false,
+          "text": "お花見",
+          "tags": ["ichi1"]
+        }
+      ],
+      "kana": [
+        {
+          "common": true,
+          "text": "はなみ",
+          "tags": ["news1"],
+          "appliesToKanji": ["花見"]
+        },
+        {
+          "common": true,
+          "text": "おはなみ",
+          "tags": ["ichi1"],
+          "appliesToKanji": ["お花見"]
+        }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun", "suru verb"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "cherry blossom viewing" },
+            { "type": null, "text": "flower viewing" },
+            { "type": null, "text": "hanami picnic" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1358280",
+      "kanji": [
+        {
+          "common": true,
+          "text": "食べる",
+          "tags": ["news1", "ichi1", "nf02"]
+        }
+      ],
+      "kana": [
+        {
+          "common": true,
+          "text": "たべる",
+          "tags": ["news1", "ichi1"],
+          "appliesToKanji": ["*"]
+        }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["ichidan verb", "transitive verb"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "to eat" },
+            { "type": null, "text": "to consume" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1000310",
+      "kanji": [],
+      "kana": [
+        {
+          "common": true,
+          "text": "ある",
+          "tags": ["news1", "ichi1", "nf01"],
+          "appliesToKanji": ["*"]
+        }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["godan verb", "intransitive verb"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "to be" },
+            { "type": null, "text": "to exist" },
+            { "type": null, "text": "to have" },
+            { "type": null, "text": "to happen" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1269170",
+      "kanji": [
+        {
+          "common": true,
+          "text": "行く",
+          "tags": ["news1", "ichi1", "nf01"]
+        }
+      ],
+      "kana": [
+        {
+          "common": true,
+          "text": "いく",
+          "tags": ["news1", "ichi1"],
+          "appliesToKanji": ["*"]
+        },
+        {
+          "common": true,
+          "text": "ゆく",
+          "tags": ["news1", "ichi1"],
+          "appliesToKanji": ["*"]
+        }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["godan verb", "intransitive verb"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "to go" },
+            { "type": null, "text": "to proceed" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1584980",
+      "kanji": [
+        {
+          "common": true,
+          "text": "来る",
+          "tags": ["news1", "ichi1", "nf01"]
+        }
+      ],
+      "kana": [
+        {
+          "common": true,
+          "text": "くる",
+          "tags": ["news1", "ichi1"],
+          "appliesToKanji": ["*"]
+        }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["kuru verb", "intransitive verb"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "to come" },
+            { "type": null, "text": "to arrive" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1518170",
+      "kanji": [
+        {
+          "common": true,
+          "text": "美味しい",
+          "tags": ["ichi1"]
+        }
+      ],
+      "kana": [
+        {
+          "common": true,
+          "text": "おいしい",
+          "tags": ["ichi1"],
+          "appliesToKanji": ["*"]
+        }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["i-adjective"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "delicious" },
+            { "type": null, "text": "tasty" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1518200",
+      "kanji": [
+        {
+          "common": true,
+          "text": "本",
+          "tags": ["news1", "ichi1", "nf01"]
+        }
+      ],
+      "kana": [
+        {
+          "common": true,
+          "text": "ほん",
+          "tags": ["news1", "ichi1"],
+          "appliesToKanji": ["*"]
+        }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "book" },
+            { "type": null, "text": "volume" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1205620",
+      "kanji": [
+        {
+          "common": true,
+          "text": "学校",
+          "tags": ["news1", "ichi1", "nf01"]
+        }
+      ],
+      "kana": [
+        {
+          "common": true,
+          "text": "がっこう",
+          "tags": ["news1", "ichi1"],
+          "appliesToKanji": ["*"]
+        }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "school" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1380960",
+      "kanji": [
+        {
+          "common": true,
+          "text": "先生",
+          "tags": ["news1", "ichi1", "nf01"]
+        }
+      ],
+      "kana": [
+        {
+          "common": true,
+          "text": "せんせい",
+          "tags": ["news1", "ichi1"],
+          "appliesToKanji": ["*"]
+        }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "teacher" },
+            { "type": null, "text": "master" },
+            { "type": null, "text": "doctor" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1548670",
+      "kanji": [
+        {
+          "common": true,
+          "text": "友達",
+          "tags": ["news1", "ichi1", "nf04"]
+        }
+      ],
+      "kana": [
+        {
+          "common": true,
+          "text": "ともだち",
+          "tags": ["news1", "ichi1"],
+          "appliesToKanji": ["*"]
+        }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun"],
+          "appliesToKanji": ["*"],
+          "appliesToKana": ["*"],
+          "related": [],
+          "antonym": [],
+          "field": [],
+          "dialect": [],
+          "misc": [],
+          "info": [],
+          "languageSource": [],
+          "gloss": [
+            { "type": null, "text": "friend" },
+            { "type": null, "text": "companion" }
+          ]
+        }
+      ]
+    }
+  ]
+}

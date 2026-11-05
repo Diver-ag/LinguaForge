@@ -12,11 +12,15 @@ import { katakanaToHiragana, buildFurigana } from './kanaUtils';
 let tokenizerPromise: Promise<any> | null = null;
 let tokenizerInstance: any = null;
 
-const DEFAULT_DIC_PATH = 'https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/';
+// Local bundled dictionary path with trailing slash
+const DEFAULT_DIC_PATH = '/dict/';
 
 async function initTokenizer(dicPath = DEFAULT_DIC_PATH): Promise<any> {
   if (tokenizerInstance) return tokenizerInstance;
   if (tokenizerPromise) return tokenizerPromise;
+
+  // Ensure trailing slash
+  const cleanDicPath = dicPath.endsWith('/') ? dicPath : `${dicPath}/`;
 
   tokenizerPromise = new Promise(async (resolve, reject) => {
     try {
@@ -24,7 +28,7 @@ async function initTokenizer(dicPath = DEFAULT_DIC_PATH): Promise<any> {
       const kuromojiModule = await import('kuromoji');
       const kuromoji = (kuromojiModule.default || kuromojiModule) as any;
 
-      kuromoji.builder({ dicPath }).build((err: any, tokenizer: any) => {
+      kuromoji.builder({ dicPath: cleanDicPath }).build((err: any, tokenizer: any) => {
         if (err) {
           tokenizerPromise = null;
           reject(err);
@@ -104,7 +108,14 @@ export function mergeRawTokens(rawTokens: RawKuromojiToken[], text: string) {
           continue;
         }
 
-        // 2. Chained conjunctive particles (て / で) followed by auxiliary / subsidiary verb
+        // 2. Chained verb suffixes (動詞 接尾: られ, させ, etc. e.g. 見 + られ + ます)
+        if (next.pos === '動詞' && next.pos_detail_1 === '接尾') {
+          group.push(next);
+          j++;
+          continue;
+        }
+
+        // 3. Chained conjunctive particles (て / で) followed by auxiliary / subsidiary verb
         if (
           next.pos === '助詞' &&
           (next.surface_form === 'て' || next.surface_form === 'で')
@@ -145,7 +156,7 @@ export function mergeRawTokens(rawTokens: RawKuromojiToken[], text: string) {
         reading: t.reading ? katakanaToHiragana(t.reading) : undefined,
       }));
 
-      // Generate furigana segments if surface contains kanji
+      // Generate furigana segments based on token's surface and reading
       const furiganaSegments = buildFurigana(surface, reading, baseForm);
 
       merged.push({
@@ -230,6 +241,7 @@ if (typeof self !== 'undefined' && typeof self.addEventListener === 'function') 
         self.postMessage({
           type: 'init_error',
           error: err?.message || String(err),
+          stack: err?.stack || '',
         });
       }
       return;

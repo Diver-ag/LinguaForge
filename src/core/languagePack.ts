@@ -31,6 +31,20 @@ export interface DictionaryEntry {
   partsOfSpeech: string[];
   level?: string;
   frequencyRank?: number;
+  frequencyBand?: string;
+  priorityTags?: string[];
+  priorityBadge?: string;
+  isSampleFallback?: boolean;
+  allEntries?: DictionaryEntry[];
+  sourceKind?: 'dictionary' | 'names' | 'kanji' | 'sentences' | 'jlpt' | 'frequency' | 'other';
+  sourceName?: string;
+  importIds?: string[];
+  groupedResults?: {
+    words: DictionaryEntry[];
+    names: DictionaryEntry[];
+    kanji: DictionaryEntry[];
+    examples: DictionaryEntry[];
+  };
   furiganaSegments?: FuriganaSegment[];
   kanjiBreakdown?: KanjiDetail[];
   examples?: ExampleSentence[];

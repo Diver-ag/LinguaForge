@@ -1,0 +1,191 @@
+{
+  "version": "3.5.0-common",
+  "languages": ["eng"],
+  "commonOnly": true,
+  "dictDate": "2026-03-01",
+  "words": [
+    {
+      "id": "1520440",
+      "kanji": [
+        { "common": true, "text": "日本", "tags": ["news1", "ichi1", "nf01"] }
+      ],
+      "kana": [
+        { "common": true, "text": "にほん", "tags": ["news1", "ichi1"] },
+        { "common": true, "text": "にっぽん", "tags": ["news1", "ichi1"] }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun"],
+          "gloss": [
+            { "text": "Japan" },
+            { "text": "Nihon" },
+            { "text": "Nippon" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1184390",
+      "kanji": [
+        { "common": true, "text": "桜", "tags": ["news1", "ichi1", "nf09"] }
+      ],
+      "kana": [
+        { "common": true, "text": "さくら", "tags": ["news1", "ichi1"] }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun"],
+          "gloss": [
+            { "text": "cherry tree" },
+            { "text": "cherry blossom" },
+            { "text": "sakura" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1283520",
+      "kanji": [
+        { "common": true, "text": "公園", "tags": ["news1", "ichi1", "nf07"] }
+      ],
+      "kana": [
+        { "common": true, "text": "こうえん", "tags": ["news1", "ichi1"] }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun"],
+          "gloss": [
+            { "text": "public park" },
+            { "text": "gardens" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1198590",
+      "kanji": [
+        { "common": true, "text": "学校", "tags": ["news1", "ichi1", "nf02"] }
+      ],
+      "kana": [
+        { "common": true, "text": "がっこう", "tags": ["news1", "ichi1"] }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun"],
+          "gloss": [
+            { "text": "school" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1375330",
+      "kanji": [
+        { "common": true, "text": "先生", "tags": ["news1", "ichi1", "nf03"] }
+      ],
+      "kana": [
+        { "common": true, "text": "せんせい", "tags": ["news1", "ichi1"] }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun", "honorific"],
+          "gloss": [
+            { "text": "teacher" },
+            { "text": "master" },
+            { "text": "doctor" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1517090",
+      "kanji": [
+        { "common": true, "text": "猫", "tags": ["news1", "ichi1", "nf14"] }
+      ],
+      "kana": [
+        { "common": true, "text": "ねこ", "tags": ["news1", "ichi1"] }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun"],
+          "gloss": [
+            { "text": "cat" },
+            { "text": "feline" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1247070",
+      "kanji": [
+        { "common": true, "text": "犬", "tags": ["news1", "ichi1", "nf12"] }
+      ],
+      "kana": [
+        { "common": true, "text": "いぬ", "tags": ["news1", "ichi1"] }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun"],
+          "gloss": [
+            { "text": "dog" },
+            { "text": "canine" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1441580",
+      "kanji": [
+        { "common": true, "text": "電車", "tags": ["news1", "ichi1", "nf04"] }
+      ],
+      "kana": [
+        { "common": true, "text": "でんしゃ", "tags": ["news1", "ichi1"] }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["noun"],
+          "gloss": [
+            { "text": "electric train" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1358280",
+      "kanji": [
+        { "common": true, "text": "食べる", "tags": ["news1", "ichi1", "nf02"] }
+      ],
+      "kana": [
+        { "common": true, "text": "たべる", "tags": ["news1", "ichi1"] }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["ichidan verb", "transitive verb"],
+          "gloss": [
+            { "text": "to eat" },
+            { "text": "to consume" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1547280",
+      "kanji": [
+        { "common": true, "text": "見られる", "tags": ["ichi1"] }
+      ],
+      "kana": [
+        { "common": true, "text": "みられる", "tags": ["ichi1"] }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["ichidan verb", "intransitive verb"],
+          "gloss": [
+            { "text": "to be seen" },
+            { "text": "to be visible" },
+            { "text": "to be able to see" }
+          ]
+        }
+      ]
+    }
+  ]
+}

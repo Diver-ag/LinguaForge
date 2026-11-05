@@ -1,0 +1,110 @@
+{
+  "version": "2.0.0-names",
+  "languages": ["eng"],
+  "kind": "names",
+  "dictDate": "2026-03-01",
+  "words": [
+    {
+      "id": "5001230",
+      "kanji": [
+        { "common": true, "text": "田中", "tags": ["name"] }
+      ],
+      "kana": [
+        { "common": true, "text": "たなか", "tags": ["name"] }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["surname"],
+          "gloss": [
+            { "text": "Tanaka (common Japanese family name)" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "5002450",
+      "kanji": [
+        { "common": true, "text": "佐藤", "tags": ["name"] }
+      ],
+      "kana": [
+        { "common": true, "text": "さとう", "tags": ["name"] }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["surname"],
+          "gloss": [
+            { "text": "Satō / Sato (most common Japanese surname)" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "5003670",
+      "kanji": [
+        { "common": true, "text": "東京", "tags": ["name"] }
+      ],
+      "kana": [
+        { "common": true, "text": "とうきょう", "tags": ["name"] }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["place"],
+          "gloss": [
+            { "text": "Tokyo (capital of Japan)" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "5004890",
+      "kanji": [
+        { "common": true, "text": "富士山", "tags": ["name"] }
+      ],
+      "kana": [
+        { "common": true, "text": "ふじさん", "tags": ["name"] }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["place"],
+          "gloss": [
+            { "text": "Mount Fuji / Mt. Fuji (highest peak in Japan)" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "5005120",
+      "kanji": [
+        { "common": true, "text": "桃太郎", "tags": ["name"] }
+      ],
+      "kana": [
+        { "common": true, "text": "ももたろう", "tags": ["name"] }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["given"],
+          "gloss": [
+            { "text": "Momotaro (Peach Boy, folklore hero)" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "5006340",
+      "kanji": [
+        { "common": true, "text": "太郎", "tags": ["name"] }
+      ],
+      "kana": [
+        { "common": true, "text": "たろう", "tags": ["name"] }
+      ],
+      "sense": [
+        {
+          "partOfSpeech": ["given"],
+          "gloss": [
+            { "text": "Tarō / Taro (traditional given name for eldest son)" }
+          ]
+        }
+      ]
+    }
+  ]
+}

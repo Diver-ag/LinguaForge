@@ -1,0 +1,18 @@
+{
+  "version": "1.0.0-jlpt",
+  "kind": "jlpt",
+  "language": "ja",
+  "name": "JLPT N5 Core Vocabulary List",
+  "items": [
+    { "word": "日本", "level": "N5" },
+    { "word": "桜", "level": "N5" },
+    { "word": "公園", "level": "N5" },
+    { "word": "学校", "level": "N5" },
+    { "word": "先生", "level": "N5" },
+    { "word": "犬", "level": "N5" },
+    { "word": "猫", "level": "N4" },
+    { "word": "電車", "level": "N5" },
+    { "word": "食べる", "level": "N5" },
+    { "word": "見る", "level": "N5" }
+  ]
+}

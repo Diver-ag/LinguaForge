@@ -11,6 +11,23 @@ export default defineConfig(() => {
       'process.env.GEMINI_API_KEY': JSON.stringify(process.env.GEMINI_API_KEY || ''),
     },
     plugins: [
+      {
+        name: 'serve-dict-no-gzip-encoding',
+        configureServer(server) {
+          server.middlewares.use((req, res, next) => {
+            if (req.url && req.url.includes('/dict/')) {
+              const origSetHeader = res.setHeader.bind(res);
+              res.setHeader = function (name: string, value: any) {
+                if (name.toLowerCase() === 'content-encoding') {
+                  return res;
+                }
+                return origSetHeader(name, value);
+              };
+            }
+            next();
+          });
+        },
+      },
       react(),
       tailwindcss(),
       VitePWA({
@@ -48,8 +65,8 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
-          maximumFileSizeToCacheInBytes: 10 * 1024 * 1024,
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2,gz,dat}'],
+          maximumFileSizeToCacheInBytes: 20 * 1024 * 1024,
           cleanupOutdatedCaches: true,
           clientsClaim: true,
           skipWaiting: true,
@@ -58,8 +75,19 @@ export default defineConfig(() => {
               urlPattern: ({ request }) => request.mode === 'navigate',
               handler: 'NetworkFirst',
               options: {
-                cacheName: 'app-shell-v3',
+                cacheName: 'app-shell-v4',
                 networkTimeoutSeconds: 2,
+              },
+            },
+            {
+              urlPattern: /\/dict\/.*\.dat\.gz$/,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'kuromoji-dict-v1',
+                expiration: {
+                  maxEntries: 20,
+                  maxAgeSeconds: 60 * 60 * 24 * 365,
+                },
               },
             },
           ],

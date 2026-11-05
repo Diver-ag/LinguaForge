@@ -4,10 +4,11 @@ import type { DictionaryEntry, LanguagePack, Token } from '../../core/languagePa
 import { db, type WordStatusType } from '../../db/db';
 import { getLanguagePack } from '../../packs/registry';
 import { useAppStore, type FuriganaMode, type FontSize } from '../../store/useAppStore';
-import { translateAndExplainPhrase, type PhraseTranslationResult } from '../../ai/gemini';
 import { getTokenizerWarning } from '../../packs/japanese/tokenizer';
 import { WordPopup } from './WordPopup';
 import { TextStatsModal } from './TextStatsModal';
+import { FuriganaText } from '../../ui/FuriganaText';
+import { JAPANESE_DICTIONARY_SAMPLE } from '../../packs/japanese/dictionaryData';
 import {
   BookOpen,
   ArrowLeft,
@@ -20,6 +21,9 @@ import {
   X,
   Loader2,
   Settings,
+  Copy,
+  BookmarkPlus,
+  Check,
 } from 'lucide-react';
 
 export const ReaderView: React.FC = () => {
@@ -30,6 +34,7 @@ export const ReaderView: React.FC = () => {
     wordStatuses,
     furiganaMode,
     colorCodingEnabled,
+    jlptUnderlineEnabled,
     fontSize,
     setFuriganaMode,
     setFontSize,
@@ -42,6 +47,7 @@ export const ReaderView: React.FC = () => {
   // Loading & token states
   const [tokens, setTokens] = useState<Token[]>([]);
   const [isTokenizing, setIsTokenizing] = useState(false);
+  const [wordJlptLevels, setWordJlptLevels] = useState<Record<string, string>>({});
 
   // Popup & active token state
   const [activeToken, setActiveToken] = useState<Token | null>(null);
@@ -61,10 +67,8 @@ export const ReaderView: React.FC = () => {
   // Phrase selection state
   const [selectedPhrase, setSelectedPhrase] = useState<string>('');
   const [selectionContextSentence, setSelectionContextSentence] = useState<string>('');
-  const [phraseTranslation, setPhraseTranslation] = useState<PhraseTranslationResult | null>(null);
-  const [isTranslatingPhrase, setIsTranslatingPhrase] = useState(false);
-  const [phraseError, setPhraseError] = useState<{ message: string; isModelNotFound?: boolean } | null>(null);
-  const [showPhraseModal, setShowPhraseModal] = useState(false);
+  const [copyToast, setCopyToast] = useState(false);
+  const [phraseCardToast, setPhraseCardToast] = useState(false);
 
   // TTS status
   const [isSpeakingAll, setIsSpeakingAll] = useState(false);
@@ -108,6 +112,53 @@ export const ReaderView: React.FC = () => {
       isCancelled = true;
     };
   }, [activeDocument, pack]);
+
+  // Resolve JLPT levels for unique words in document
+  useEffect(() => {
+    let isCancelled = false;
+    async function resolveWordLevels() {
+      if (!tokens || tokens.length === 0) return;
+      const uniqueKeys = Array.from(
+        new Set(tokens.filter((t) => t.isWord).map((t) => t.baseForm || t.surface))
+      );
+      if (uniqueKeys.length === 0) return;
+
+      const map: Record<string, string> = {};
+
+      try {
+        const matches = await db.jmdictEntries.where('forms').anyOf(uniqueKeys).toArray();
+        for (const entry of matches) {
+          if (entry.jlptLevel && /^N[1-5]$/i.test(entry.jlptLevel)) {
+            const cleanLvl = entry.jlptLevel.toUpperCase();
+            for (const f of entry.forms) {
+              if (!map[f]) map[f] = cleanLvl;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to resolve word levels:', err);
+      }
+
+      // Fallback to sample dictionary for remaining
+      for (const w of uniqueKeys) {
+        if (!map[w]) {
+          const sample = JAPANESE_DICTIONARY_SAMPLE.find((e) => e.word === w || e.readings.includes(w));
+          if (sample?.level && /^N[1-5]$/i.test(sample.level)) {
+            map[w] = sample.level.toUpperCase();
+          }
+        }
+      }
+
+      if (!isCancelled) {
+        setWordJlptLevels(map);
+      }
+    }
+
+    resolveWordLevels();
+    return () => {
+      isCancelled = true;
+    };
+  }, [tokens]);
 
   // Helper to extract surrounding sentence
   const extractSurroundingSentence = useCallback((fullText: string, charIndex: number): string => {
@@ -245,46 +296,40 @@ export const ReaderView: React.FC = () => {
     }
   };
 
-  const handleTranslatePhrase = async () => {
+  const handleCopyPhrase = async () => {
     if (!selectedPhrase) return;
-    setIsTranslatingPhrase(true);
-    setPhraseError(null);
-    setShowPhraseModal(true);
-
     try {
-      const res = await translateAndExplainPhrase(selectedPhrase, selectionContextSentence, pack.name);
-      setPhraseTranslation(res);
-      setIsTranslatingPhrase(false);
-    } catch (err: any) {
-      setIsTranslatingPhrase(false);
-      const isNotFound =
-        err?.isModelNotFound ||
-        err?.statusCode === 404 ||
-        err?.message === 'This model is unavailable. Pick another one in Settings' ||
-        /not found/i.test(err?.message || '') ||
-        /is no longer available/i.test(err?.message || '');
+      await navigator.clipboard.writeText(selectedPhrase);
+      setCopyToast(true);
+      setTimeout(() => {
+        setCopyToast(false);
+        setSelectedPhrase('');
+      }, 1200);
+    } catch (err) {
+      console.warn('Failed to copy phrase:', err);
+    }
+  };
 
-      if (err?.message === 'NO_API_KEY') {
-        setPhraseError({
-          message: 'Gemini API key is not configured. Add your key in Settings to unlock AI phrase explanations.',
-          isModelNotFound: true,
-        });
-      } else if (err?.message === 'OFFLINE') {
-        setPhraseError({
-          message: 'You are currently offline. AI phrase analysis requires an active internet connection.',
-          isModelNotFound: false,
-        });
-      } else if (isNotFound) {
-        setPhraseError({
-          message: 'This model is unavailable. Pick another one in Settings',
-          isModelNotFound: true,
-        });
-      } else {
-        setPhraseError({
-          message: err?.message || 'Could not reach AI service',
-          isModelNotFound: false,
-        });
-      }
+  const handleAddPhraseCard = async () => {
+    if (!selectedPhrase) return;
+    try {
+      await db.flashcards.add({
+        word: selectedPhrase,
+        reading: '',
+        meaning: 'Selected phrase',
+        languageId: activeLanguageId,
+        sentence: selectionContextSentence,
+        sourceDocTitle: activeDocument?.title,
+        status: 'new',
+        createdAt: Date.now(),
+      });
+      setPhraseCardToast(true);
+      setTimeout(() => {
+        setPhraseCardToast(false);
+        setSelectedPhrase('');
+      }, 1200);
+    } catch (err) {
+      console.warn('Failed to add phrase card:', err);
     }
   };
 
@@ -305,20 +350,20 @@ export const ReaderView: React.FC = () => {
     }
   };
 
-  // Font sizing classes
+  // Font sizing classes with line-height about 2.2 for furigana headroom without extra gaps
   const fontClass =
     fontSize === 'sm'
-      ? 'text-base leading-relaxed'
+      ? 'text-base leading-[2.2]'
       : fontSize === 'lg'
-      ? 'text-2xl leading-loose'
+      ? 'text-2xl leading-[2.2]'
       : fontSize === 'xl'
-      ? 'text-3xl leading-[2.6]'
+      ? 'text-3xl leading-[2.3]'
       : 'text-xl leading-[2.2]';
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col pb-24 md:pb-12">
+    <div className="min-h-screen bg-[var(--background)] text-[var(--text)] flex flex-col pb-24 md:pb-12">
       {/* Top sticky reader control bar */}
-      <header className="sticky top-0 z-30 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-4 py-2.5">
+      <header className="sticky top-0 z-30 bg-[var(--surface)]/90 backdrop-blur-md border-b border-[var(--border)] px-4 py-2.5">
         <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <button
@@ -416,7 +461,7 @@ export const ReaderView: React.FC = () => {
             </button>
           </div>
         ) : (
-          <div className="bg-white dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800/80 rounded-3xl p-6 sm:p-10 shadow-sm relative">
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-3xl p-6 sm:p-10 shadow-sm relative">
             {/* Status alerts: Kuromoji warning or background tokenizing */}
             <div className="mb-4 flex items-center justify-between gap-2 flex-wrap">
               {isTokenizing && (
@@ -427,27 +472,45 @@ export const ReaderView: React.FC = () => {
               )}
 
               {getTokenizerWarning() && (
-                <div className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-300 font-semibold bg-amber-50 dark:bg-amber-950/60 px-3 py-1 rounded-full border border-amber-200 dark:border-amber-800">
-                  <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                  <span>{getTokenizerWarning()}</span>
+                <div className="flex items-center justify-between gap-2 text-xs text-amber-800 dark:text-amber-200 bg-amber-50 dark:bg-amber-950/60 px-3.5 py-1.5 rounded-2xl border border-amber-200 dark:border-amber-800 w-full">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span className="font-semibold">{getTokenizerWarning()}</span>
+                  </div>
+                  <button
+                    onClick={() => navigate('/settings')}
+                    className="text-[11px] underline font-bold shrink-0 hover:text-amber-900 dark:hover:text-amber-100"
+                  >
+                    View Diagnostics
+                  </button>
                 </div>
               )}
             </div>
 
             {/* Multi-word phrase selection helper floating bubble */}
-            {selectedPhrase && !showPhraseModal && (
-              <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-40 bg-slate-900 text-white dark:bg-white dark:text-slate-900 px-4 py-2.5 rounded-full shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-bottom-4 duration-200">
-                <span className="text-xs font-medium truncate max-w-[150px]">"{selectedPhrase}"</span>
+            {selectedPhrase && (
+              <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-40 bg-[var(--surface-elevated)] text-[var(--text)] px-4 py-2.5 rounded-full shadow-2xl flex items-center gap-2 sm:gap-3 animate-in fade-in slide-in-from-bottom-4 duration-200 border border-[var(--border)]">
+                <span className="text-xs font-medium truncate max-w-[120px] sm:max-w-[200px]">
+                  "{selectedPhrase}"
+                </span>
                 <button
-                  onClick={handleTranslatePhrase}
-                  className="flex items-center gap-1 text-xs font-bold bg-indigo-600 text-white dark:bg-indigo-600 px-3 py-1 rounded-full hover:bg-indigo-700 transition"
+                  onClick={handleCopyPhrase}
+                  className="flex items-center gap-1 text-xs font-bold bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 px-3 py-1 rounded-full transition"
                 >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  Translate Phrase
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>{copyToast ? 'Copied!' : 'Copy'}</span>
+                </button>
+                <button
+                  onClick={handleAddPhraseCard}
+                  className="flex items-center gap-1 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded-full transition shadow-xs"
+                >
+                  <BookmarkPlus className="w-3.5 h-3.5" />
+                  <span>{phraseCardToast ? 'Added!' : 'Add to Cards'}</span>
                 </button>
                 <button
                   onClick={() => setSelectedPhrase('')}
-                  className="p-1 text-slate-400 hover:text-white dark:hover:text-black transition"
+                  className="p-1 text-slate-400 hover:text-[var(--text)] transition"
+                  title="Clear selection"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
@@ -455,9 +518,9 @@ export const ReaderView: React.FC = () => {
             )}
 
             {/* Tokenized Text rendering: if tokens not yet available, show plain text */}
-            <div className={`font-sans tracking-wide select-text ${fontClass}`}>
+            <div className={`font-sans select-text ${fontClass}`}>
               {tokens.length === 0 ? (
-                <div className="whitespace-pre-wrap leading-relaxed text-slate-800 dark:text-slate-200">
+                <div className="whitespace-pre-wrap leading-relaxed text-[var(--text)]">
                   {activeDocument.content}
                 </div>
               ) : (
@@ -478,17 +541,42 @@ export const ReaderView: React.FC = () => {
                 const status: WordStatusType = wordStatuses[lemmaOrSurface] || wordStatuses[token.surface] || 'new';
 
                 const isSelected = activeToken?.id === token.id;
+                const tokenJlpt = wordJlptLevels[lemmaOrSurface] || wordJlptLevels[token.surface] || token.level;
 
-                // Status highlighting
+                // JLPT Level Underline (when enabled via Settings)
+                let jlptUnderlineStyle = '';
+                if (jlptUnderlineEnabled && tokenJlpt) {
+                  if (tokenJlpt === 'N5') {
+                    jlptUnderlineStyle = 'underline decoration-emerald-500 decoration-2 underline-offset-4';
+                  } else if (tokenJlpt === 'N4') {
+                    jlptUnderlineStyle = 'underline decoration-sky-500 decoration-2 underline-offset-4';
+                  } else if (tokenJlpt === 'N3') {
+                    jlptUnderlineStyle = 'underline decoration-amber-500 decoration-2 underline-offset-4';
+                  } else if (tokenJlpt === 'N2') {
+                    jlptUnderlineStyle = 'underline decoration-orange-500 decoration-2 underline-offset-4';
+                  } else if (tokenJlpt === 'N1') {
+                    jlptUnderlineStyle = 'underline decoration-rose-500 decoration-2 underline-offset-4';
+                  }
+                }
+
+                // Status highlighting (Known / Learning / Ignored / New)
                 let statusStyle = '';
-                if (colorCodingEnabled) {
+                if (jlptUnderlineStyle) {
+                  if (status === 'learning') {
+                    statusStyle = `${jlptUnderlineStyle} bg-[var(--reader-highlight-learning)] text-[var(--text)]`;
+                  } else if (status === 'ignored') {
+                    statusStyle = 'text-[var(--text-muted)] line-through';
+                  } else {
+                    statusStyle = `${jlptUnderlineStyle} text-[var(--text)]`;
+                  }
+                } else if (colorCodingEnabled) {
                   if (status === 'known') {
-                    statusStyle = 'text-slate-800 dark:text-slate-200';
+                    statusStyle = 'text-[var(--text)]';
                   } else if (status === 'learning') {
                     statusStyle =
-                      'text-amber-800 dark:text-amber-300 underline decoration-amber-400/80 decoration-2 underline-offset-4 bg-amber-50/50 dark:bg-amber-950/30';
+                      'text-amber-800 dark:text-amber-300 underline decoration-amber-400/80 decoration-2 underline-offset-4 bg-[var(--reader-highlight-learning)]';
                   } else if (status === 'ignored') {
-                    statusStyle = 'text-slate-400 line-through';
+                    statusStyle = 'text-[var(--text-muted)] line-through';
                   } else {
                     statusStyle =
                       'text-indigo-900 dark:text-indigo-200 underline decoration-indigo-300 dark:decoration-indigo-700 decoration-1 underline-offset-4';
@@ -497,8 +585,8 @@ export const ReaderView: React.FC = () => {
 
                 // Active token highlight (whole unit highlighted upon hover or selection)
                 const highlightClass = isSelected
-                  ? 'bg-indigo-100 dark:bg-indigo-950/90 ring-2 ring-indigo-500 dark:ring-indigo-400 rounded-sm'
-                  : 'hover:bg-indigo-50/80 dark:hover:bg-indigo-950/40 rounded-sm';
+                  ? 'bg-indigo-100 dark:bg-indigo-950/90 ring-1 ring-indigo-500 dark:ring-indigo-400'
+                  : 'hover:bg-[var(--reader-hover)]';
 
                 const hasFurigana = token.furiganaSegments && token.furiganaSegments.length > 0;
 
@@ -509,31 +597,16 @@ export const ReaderView: React.FC = () => {
                     onMouseEnter={(e) => handleTokenMouseEnter(token, e)}
                     onMouseLeave={handleTokenMouseLeave}
                     onClick={(e) => handleTokenClick(token, e)}
-                    className={`inline-block cursor-pointer transition-colors duration-100 px-0.5 ${statusStyle} ${highlightClass}`}
+                    className={`group/token cursor-pointer transition-colors duration-100 px-0.5 rounded ${statusStyle} ${highlightClass}`}
                   >
                     {hasFurigana ? (
-                      <ruby className="group/ruby pointer-events-none">
-                        {token.furiganaSegments!.map((seg, idx) => (
-                          <React.Fragment key={idx}>
-                            {seg.text}
-                            {seg.ruby && (
-                              <rt
-                                className={`text-[0.55em] font-medium tracking-normal text-slate-500 dark:text-slate-400 select-none ${
-                                  furiganaMode === 'always'
-                                    ? 'opacity-100'
-                                    : furiganaMode === 'hover'
-                                    ? 'opacity-0 group-hover/ruby:opacity-100 transition-opacity'
-                                    : 'opacity-0 hidden'
-                                }`}
-                              >
-                                {seg.ruby}
-                              </rt>
-                            )}
-                          </React.Fragment>
-                        ))}
-                      </ruby>
+                      <FuriganaText
+                        segments={token.furiganaSegments}
+                        furiganaMode={furiganaMode}
+                        rtClassName="text-[var(--reader-ruby)] font-medium"
+                      />
                     ) : (
-                      token.surface
+                      <span>{token.surface}</span>
                     )}
                   </span>
                 );
@@ -610,121 +683,6 @@ export const ReaderView: React.FC = () => {
         />
       )}
 
-      {/* AI Phrase Translation Modal */}
-      {showPhraseModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden p-6 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                <h3 className="font-bold text-slate-900 dark:text-white text-base">Phrase Translation & Nuance</h3>
-              </div>
-              <button
-                onClick={() => {
-                  setShowPhraseModal(false);
-                  setSelectedPhrase('');
-                }}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-600"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {isTranslatingPhrase ? (
-              <div className="py-12 flex flex-col items-center justify-center space-y-3">
-                <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
-                <p className="text-sm font-medium text-slate-500">Analyzing phrase context with Gemini...</p>
-              </div>
-            ) : phraseError ? (
-              <div className="p-4 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-xl space-y-3">
-                <div className="flex items-start gap-2.5 text-amber-800 dark:text-amber-300 text-sm">
-                  <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
-                  <p className="font-medium leading-relaxed">{phraseError.message}</p>
-                </div>
-                {(phraseError.isModelNotFound || phraseError.message.includes('Settings')) && (
-                  <button
-                    onClick={() => {
-                      setShowPhraseModal(false);
-                      navigate('/settings');
-                    }}
-                    className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-sm active:scale-95"
-                  >
-                    <Settings className="w-3.5 h-3.5" />
-                    Open Settings
-                  </button>
-                )}
-              </div>
-            ) : phraseTranslation ? (
-              <div className="space-y-4 text-sm">
-                <div className="p-3 bg-indigo-50/60 dark:bg-indigo-950/40 rounded-xl border border-indigo-100 dark:border-indigo-900/40">
-                  <span className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 block mb-0.5">
-                    Selected Phrase
-                  </span>
-                  <div className="text-xl font-bold text-slate-900 dark:text-white">
-                    {phraseTranslation.phrase}
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <span className="text-xs font-semibold text-slate-400">Natural Translation</span>
-                  <p className="font-semibold text-base text-slate-900 dark:text-white">
-                    {phraseTranslation.naturalTranslation}
-                  </p>
-                </div>
-
-                {phraseTranslation.literalTranslation && (
-                  <div className="space-y-1">
-                    <span className="text-xs font-semibold text-slate-400">Literal Meaning</span>
-                    <p className="text-slate-600 dark:text-slate-300 text-xs">
-                      {phraseTranslation.literalTranslation}
-                    </p>
-                  </div>
-                )}
-
-                {phraseTranslation.nuanceExplanation && (
-                  <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl text-xs space-y-1">
-                    <span className="font-bold text-slate-700 dark:text-slate-200 block">Nuance & Grammar</span>
-                    <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
-                      {phraseTranslation.nuanceExplanation}
-                    </p>
-                  </div>
-                )}
-
-                {phraseTranslation.breakdown && phraseTranslation.breakdown.length > 0 && (
-                  <div className="space-y-2">
-                    <span className="text-xs font-semibold text-slate-400">Component Breakdown</span>
-                    <div className="grid grid-cols-2 gap-2 text-xs">
-                      {phraseTranslation.breakdown.map((item, idx) => (
-                        <div
-                          key={idx}
-                          className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
-                        >
-                          <span className="font-bold text-indigo-600 dark:text-indigo-400 block">
-                            {item.component}
-                          </span>
-                          <span className="text-slate-500 dark:text-slate-400">{item.meaning}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : null}
-
-            <div className="flex justify-end pt-2">
-              <button
-                onClick={() => {
-                  setShowPhraseModal(false);
-                  setSelectedPhrase('');
-                }}
-                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-semibold rounded-xl transition"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

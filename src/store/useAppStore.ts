@@ -13,6 +13,7 @@ interface AppState {
   theme: AppTheme;
   furiganaMode: FuriganaMode;
   colorCodingEnabled: boolean;
+  jlptUnderlineEnabled: boolean;
   fontSize: FontSize;
   activeDocumentId: number | null;
   activeDocument: DocumentItem | null;
@@ -26,6 +27,7 @@ interface AppState {
   setTheme: (theme: AppTheme) => Promise<void>;
   setFuriganaMode: (mode: FuriganaMode) => Promise<void>;
   setColorCodingEnabled: (enabled: boolean) => Promise<void>;
+  setJlptUnderlineEnabled: (enabled: boolean) => Promise<void>;
   setFontSize: (size: FontSize) => Promise<void>;
   setGeminiModel: (model: string) => Promise<void>;
   setActiveDocument: (doc: DocumentItem | null) => void;
@@ -37,9 +39,10 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set, get) => ({
   activeLanguageId: 'ja',
-  theme: 'dark',
+  theme: (typeof localStorage !== 'undefined' && (localStorage.getItem('linguaforge_theme') as AppTheme)) || 'system',
   furiganaMode: 'always',
   colorCodingEnabled: true,
+  jlptUnderlineEnabled: false,
   fontSize: 'md',
   activeDocumentId: null,
   activeDocument: null,
@@ -56,6 +59,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setTheme: async (theme: AppTheme) => {
     set({ theme });
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('linguaforge_theme', theme);
+      }
+    } catch (e) {}
     await db.settings.put({ key: 'theme', value: theme });
     applyThemeToDocument(theme);
     await logEvent('theme_changed', { theme });
@@ -70,6 +78,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   setColorCodingEnabled: async (enabled: boolean) => {
     set({ colorCodingEnabled: enabled });
     await db.settings.put({ key: 'colorCodingEnabled', value: enabled });
+  },
+
+  setJlptUnderlineEnabled: async (enabled: boolean) => {
+    set({ jlptUnderlineEnabled: enabled });
+    await db.settings.put({ key: 'jlptUnderlineEnabled', value: enabled });
+    await logEvent('jlpt_underline_changed', { enabled });
   },
 
   setFontSize: async (fontSize: FontSize) => {
@@ -96,13 +110,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       const themeSetting = await db.settings.get('theme');
       const furiganaSetting = await db.settings.get('furiganaMode');
       const colorSetting = await db.settings.get('colorCodingEnabled');
+      const jlptUnderlineSetting = await db.settings.get('jlptUnderlineEnabled');
       const fontSetting = await db.settings.get('fontSize');
       const storedModel = await getStoredModel();
 
+      const localTheme = typeof localStorage !== 'undefined' ? (localStorage.getItem('linguaforge_theme') as AppTheme) : null;
       const activeLang = langSetting?.value || 'ja';
-      const activeTheme = themeSetting?.value || 'dark';
+      const activeTheme: AppTheme = (themeSetting?.value || localTheme || 'system') as AppTheme;
       const activeFurigana = furiganaSetting?.value || 'always';
       const activeColor = colorSetting?.value !== undefined ? colorSetting.value : true;
+      const activeJlptUnderline = jlptUnderlineSetting?.value !== undefined ? jlptUnderlineSetting.value : false;
       const activeFont = fontSetting?.value || 'md';
 
       set({
@@ -110,6 +127,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         theme: activeTheme,
         furiganaMode: activeFurigana,
         colorCodingEnabled: activeColor,
+        jlptUnderlineEnabled: activeJlptUnderline,
         fontSize: activeFont,
         geminiModel: storedModel || DEFAULT_GEMINI_MODEL,
       });
@@ -191,14 +209,51 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 }));
 
-function applyThemeToDocument(theme: AppTheme) {
+let mediaQueryListenerAttached = false;
+
+export function applyThemeToDocument(theme: AppTheme) {
+  if (typeof document === 'undefined') return;
   const root = document.documentElement;
   const isDark =
-    theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    theme === 'dark' ||
+    (theme === 'system' &&
+      typeof window !== 'undefined' &&
+      window.matchMedia &&
+      window.matchMedia('(prefers-color-scheme: dark)').matches);
 
   if (isDark) {
     root.classList.add('dark');
   } else {
     root.classList.remove('dark');
+  }
+
+  // Update meta theme-color
+  try {
+    let meta = document.querySelector('meta[name="theme-color"]');
+    if (!meta) {
+      meta = document.createElement('meta');
+      meta.setAttribute('name', 'theme-color');
+      document.head.appendChild(meta);
+    }
+    meta.setAttribute('content', isDark ? '#090d16' : '#f8fafc');
+  } catch (e) {}
+
+  // Listen to system theme changes dynamically when theme === 'system'
+  if (typeof window !== 'undefined' && window.matchMedia && !mediaQueryListenerAttached) {
+    mediaQueryListenerAttached = true;
+    try {
+      const mq = window.matchMedia('(prefers-color-scheme: dark)');
+      const listener = () => {
+        const currentTheme = useAppStore.getState().theme;
+        if (currentTheme === 'system') {
+          applyThemeToDocument('system');
+        }
+      };
+      if (mq.addEventListener) {
+        mq.addEventListener('change', listener);
+      } else if ((mq as any).addListener) {
+        (mq as any).addListener(listener);
+      }
+    } catch (e) {}
   }
 }

@@ -24,8 +24,15 @@ export const Navbar: React.FC = () => {
   const allPacks = getAllLanguagePacks();
   const isOnline = useOnlineStatus();
 
+  const isDark =
+    theme === 'dark' ||
+    (theme === 'system' &&
+      typeof window !== 'undefined' &&
+      window.matchMedia &&
+      window.matchMedia('(prefers-color-scheme: dark)').matches);
+
   const toggleTheme = () => {
-    setTheme(theme === 'dark' ? 'light' : 'dark');
+    setTheme(isDark ? 'light' : 'dark');
   };
 
   const navItems = [
@@ -39,13 +46,13 @@ export const Navbar: React.FC = () => {
   return (
     <>
       {/* Desktop / Tablet Top Navigation Header */}
-      <header className="sticky top-0 z-40 bg-white/85 dark:bg-slate-900/85 backdrop-blur-md border-b border-slate-200 dark:border-slate-800">
+      <header className="sticky top-0 z-40 bg-[var(--surface)]/90 backdrop-blur-md border-b border-[var(--border)]">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
           {/* Logo & Brand */}
           <div className="flex items-center gap-6">
             <NavLink to="/library" className="flex items-center gap-2.5 group">
               <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 via-purple-600 to-indigo-500 p-0.5 shadow-md shadow-indigo-500/20 group-hover:scale-105 transition-transform">
-                <div className="w-full h-full bg-white dark:bg-slate-900 rounded-[10px] flex items-center justify-center">
+                <div className="w-full h-full bg-[var(--surface)] rounded-[10px] flex items-center justify-center">
                   <Sparkles className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
                 </div>
               </div>
@@ -53,7 +60,7 @@ export const Navbar: React.FC = () => {
                 <span className="font-black text-lg tracking-tight bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
                   LinguaForge
                 </span>
-                <span className="hidden sm:inline-block text-[10px] uppercase font-bold tracking-widest text-slate-400 dark:text-slate-500 ml-1.5 px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800">
+                <span className="hidden sm:inline-block text-[10px] uppercase font-bold tracking-widest text-[var(--text-muted)] ml-1.5 px-1.5 py-0.5 rounded bg-[var(--surface-muted)]">
                   PWA
                 </span>
               </div>
@@ -70,8 +77,8 @@ export const Navbar: React.FC = () => {
                     to={item.to}
                     className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition ${
                       isActive
-                        ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400'
-                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/60'
+                        ? 'bg-[var(--accent-subtle)] text-[var(--accent-text)]'
+                        : 'text-[var(--text-secondary)] hover:text-[var(--text)] hover:bg-[var(--surface-muted)]'
                     }`}
                   >
                     <Icon className="w-4 h-4" />
@@ -89,15 +96,15 @@ export const Navbar: React.FC = () => {
               <select
                 value={activeLanguageId}
                 onChange={(e) => setActiveLanguage(e.target.value)}
-                className="appearance-none pl-3 pr-8 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/80 text-xs font-bold text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                className="appearance-none pl-3 pr-8 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-xs font-bold text-[var(--text)] focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
               >
                 {allPacks.map((p) => (
-                  <option key={p.id} value={p.id}>
+                  <option key={p.id} value={p.id} className="bg-[var(--surface)] text-[var(--text)]">
                     {p.flagEmoji} {p.name}
                   </option>
                 ))}
               </select>
-              <div className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-slate-400">
+              <div className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-[var(--text-muted)]">
                 ▼
               </div>
             </div>
@@ -129,17 +136,22 @@ export const Navbar: React.FC = () => {
             {/* Theme Toggle Button */}
             <button
               onClick={toggleTheme}
-              className="p-2 rounded-xl text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
-              title="Toggle Dark / Light Theme"
+              className="p-2 rounded-xl text-[var(--text-secondary)] hover:bg-[var(--surface-muted)] transition"
+              title={
+                theme === 'system'
+                  ? `Theme: System (${isDark ? 'Dark' : 'Light'}) - Click to toggle`
+                  : `Theme: ${theme === 'dark' ? 'Dark' : 'Light'} - Click to toggle`
+              }
+              aria-label="Toggle theme"
             >
-              {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-indigo-600" />}
+              {isDark ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-indigo-600" />}
             </button>
           </div>
         </div>
       </header>
 
       {/* Mobile Bottom Navigation Bar */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 px-2 py-1.5 flex items-center justify-around">
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[var(--surface)]/95 backdrop-blur-md border-t border-[var(--border)] px-2 py-1.5 flex items-center justify-around">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = location.pathname.startsWith(item.to);
@@ -149,8 +161,8 @@ export const Navbar: React.FC = () => {
               to={item.to}
               className={`flex flex-col items-center py-1 px-3 rounded-xl transition text-[11px] font-bold ${
                 isActive
-                  ? 'text-indigo-600 dark:text-indigo-400'
-                  : 'text-slate-400 dark:text-slate-500 hover:text-slate-700'
+                  ? 'text-[var(--accent-text)]'
+                  : 'text-[var(--text-muted)] hover:text-[var(--text)]'
               }`}
             >
               <Icon className="w-5 h-5 mb-0.5" />

@@ -38,7 +38,6 @@ const SpanishLanguagePack: LanguagePack = {
       sizeBytes: 11534336,
       sizeFormatted: '11.0 MB',
       url: 'https://data.linguaforge.app/packs/es/lexicon.json.gz',
-      isCoreBundle: true,
     },
   ],
   async tokenize(text: string) {

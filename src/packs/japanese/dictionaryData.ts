@@ -158,6 +158,24 @@ export const JAPANESE_DICTIONARY_SAMPLE: DictionaryEntry[] = [
     ],
   },
   {
+    id: 'jp-nihon',
+    word: '日本',
+    readings: ['にほん', 'にっぽん', 'nihon', 'nippon'],
+    meanings: ['Japan', 'Nihon', 'Nippon'],
+    partsOfSpeech: ['Noun'],
+    level: 'N5',
+    frequencyRank: 120,
+    priorityTags: ['news1', 'ichi1', 'nf01'],
+    furiganaSegments: [{ text: '日本', ruby: 'にほん' }],
+    examples: [
+      {
+        original: '日本は島国です。',
+        translation: 'Japan is an island nation.',
+      },
+    ],
+    kanjiBreakdown: getKanjiBreakdown('日本'),
+  },
+  {
     id: 'jp-1',
     word: '日本語',
     readings: ['にほんご', 'nihongo'],
@@ -257,6 +275,45 @@ export const JAPANESE_DICTIONARY_SAMPLE: DictionaryEntry[] = [
       },
     ],
     kanjiBreakdown: getKanjiBreakdown('学校'),
+  },
+  {
+    id: 'jp-sakura',
+    word: '桜',
+    readings: ['さくら', 'sakura'],
+    meanings: ['cherry tree', 'cherry blossom', 'sakura'],
+    partsOfSpeech: ['Noun'],
+    level: 'N5',
+    frequencyRank: 2200,
+    priorityTags: ['news1', 'ichi1', 'nf09'],
+    furiganaSegments: [{ text: '桜', ruby: 'さくら' }],
+    examples: [
+      {
+        original: '春になると桜の花が美しく咲きます。',
+        translation: 'In spring, the cherry blossoms bloom beautifully.',
+      },
+    ],
+    kanjiBreakdown: getKanjiBreakdown('桜'),
+  },
+  {
+    id: 'jp-kouen',
+    word: '公園',
+    readings: ['こうえん', 'kouen'],
+    meanings: ['public park', 'gardens'],
+    partsOfSpeech: ['Noun'],
+    level: 'N5',
+    frequencyRank: 1600,
+    priorityTags: ['news1', 'ichi1', 'nf07'],
+    furiganaSegments: [
+      { text: '公', ruby: 'こう' },
+      { text: '園', ruby: 'えん' },
+    ],
+    examples: [
+      {
+        original: '休日に公園を散歩しました。',
+        translation: 'I took a walk in the park on my day off.',
+      },
+    ],
+    kanjiBreakdown: getKanjiBreakdown('公園'),
   },
   {
     id: 'jp-6',

@@ -9,16 +9,21 @@ import { HistoryView } from './features/history/HistoryView';
 import { LanguagePacksView } from './features/packs/LanguagePacksView';
 import { SettingsView } from './features/settings/SettingsView';
 
+import { backfillFlashcards } from './db/db';
+import { tokenizeJapanese } from './packs/japanese/tokenizer';
+
 export default function App() {
   const { loadInitialSettings } = useAppStore();
 
   useEffect(() => {
     loadInitialSettings();
+    // One-time backfill for existing flashcards without readings or furigana
+    backfillFlashcards(tokenizeJapanese).catch(console.error);
   }, [loadInitialSettings]);
 
   return (
     <BrowserRouter>
-      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 font-sans antialiased text-slate-900 dark:text-slate-100 flex flex-col selection:bg-indigo-500 selection:text-white">
+      <div className="min-h-screen bg-[var(--background)] text-[var(--text)] font-sans antialiased flex flex-col selection:bg-indigo-500 selection:text-white transition-colors duration-150">
         <Navbar />
         <div className="flex-1">
           <Routes>

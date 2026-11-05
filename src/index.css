@@ -1,1 +1,97 @@
 @import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --background: #f8fafc;
+  --surface: #ffffff;
+  --surface-elevated: #ffffff;
+  --surface-muted: #f1f5f9;
+  --surface-subtle: #f8fafc;
+  --border: #e2e8f0;
+  --border-subtle: #f1f5f9;
+  --text: #0f172a;
+  --text-secondary: #334155;
+  --text-muted: #64748b;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-subtle: #eef2ff;
+  --accent-text: #4338ca;
+
+  /* Reader furigana & highlights in light mode */
+  --reader-text: #0f172a;
+  --reader-ruby: #64748b;
+  --reader-highlight-known: transparent;
+  --reader-highlight-learning: rgba(245, 158, 11, 0.16);
+  --reader-highlight-new: rgba(79, 70, 229, 0.12);
+  --reader-hover: rgba(99, 102, 241, 0.14);
+
+  color-scheme: light;
+}
+
+.dark {
+  --background: #090d16;
+  --surface: #0f172a;
+  --surface-elevated: #1e293b;
+  --surface-muted: #1e293b;
+  --surface-subtle: #0f172a;
+  --border: #1e293b;
+  --border-subtle: #1e293b;
+  --text: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --accent: #6366f1;
+  --accent-hover: #4f46e5;
+  --accent-subtle: rgba(99, 102, 241, 0.18);
+  --accent-text: #a5b4fc;
+
+  /* Reader furigana & highlights in dark mode */
+  --reader-text: #f8fafc;
+  --reader-ruby: #94a3b8;
+  --reader-highlight-known: transparent;
+  --reader-highlight-learning: rgba(245, 158, 11, 0.25);
+  --reader-highlight-new: rgba(99, 102, 241, 0.22);
+  --reader-hover: rgba(99, 102, 241, 0.28);
+
+  color-scheme: dark;
+}
+
+@theme {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-elevated: var(--surface-elevated);
+  --color-surface-muted: var(--surface-muted);
+  --color-surface-subtle: var(--surface-subtle);
+  --color-border: var(--border);
+  --color-border-subtle: var(--border-subtle);
+  --color-text: var(--text);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-accent-text: var(--accent-text);
+}
+
+html, body {
+  background-color: var(--background);
+  color: var(--text);
+  min-height: 100%;
+}
+
+/* Native Furigana Ruby Typography & Baseline Alignment */
+ruby {
+  ruby-align: center;
+  ruby-position: over;
+  vertical-align: baseline;
+  letter-spacing: 0 !important;
+}
+
+rt {
+  font-size: 0.5em;
+  line-height: 1;
+  letter-spacing: 0 !important;
+  text-align: center;
+  font-variant-east-asian: normal;
+  user-select: none;
+}

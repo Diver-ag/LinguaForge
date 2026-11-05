@@ -34,7 +34,6 @@ const ASSETS_MANIFEST: PackAssetManifestItem[] = [
     sizeBytes: 15728640,
     sizeFormatted: '15.0 MB',
     url: 'https://data.linguaforge.app/packs/ja/jmdict.json.gz',
-    isCoreBundle: true,
   },
   {
     id: 'kanjidic2-db',
@@ -65,6 +64,8 @@ const ASSETS_MANIFEST: PackAssetManifestItem[] = [
   },
 ];
 
+import { lookupJmdict, lookupSampleDictionary } from './jmdictLookup';
+
 export const JapaneseLanguagePack: LanguagePack = {
   id: 'ja',
   name: 'Japanese',
@@ -82,60 +83,8 @@ export const JapaneseLanguagePack: LanguagePack = {
   },
 
   async lookup(word: string, lemma?: string): Promise<DictionaryEntry | null> {
-    const cleanWord = word.trim();
-    const cleanLemma = lemma?.trim();
-
-    // 1. Look up lemma (dictionary form) first if provided
-    let foundEntry: DictionaryEntry | null = null;
-    if (cleanLemma) {
-      foundEntry =
-        JAPANESE_DICTIONARY_SAMPLE.find(
-          (e) => e.word === cleanLemma || e.readings.includes(cleanLemma)
-        ) || null;
-    }
-
-    // 2. Fallback: look up surface form
-    if (!foundEntry) {
-      foundEntry =
-        JAPANESE_DICTIONARY_SAMPLE.find(
-          (e) => e.word === cleanWord || e.readings.includes(cleanWord)
-        ) || null;
-    }
-
-    // 3. Fallback: substring match
-    if (!foundEntry) {
-      foundEntry =
-        JAPANESE_DICTIONARY_SAMPLE.find(
-          (e) => cleanWord.includes(e.word) || (cleanLemma && cleanLemma.includes(e.word))
-        ) || null;
-    }
-
-    // 4. Fallback: check if single kanji in kanji database
-    if (!foundEntry && cleanWord.length === 1 && JAPANESE_KANJI_DATABASE[cleanWord]) {
-      const k = JAPANESE_KANJI_DATABASE[cleanWord];
-      return {
-        id: `kanji-${cleanWord}`,
-        word: cleanWord,
-        readings: [...(k.readings.on || []), ...(k.readings.kun || [])],
-        meanings: k.meanings,
-        partsOfSpeech: ['Kanji'],
-        level: k.jlptLevel,
-        frequencyRank: k.frequencyRank,
-        kanjiBreakdown: [k],
-      };
-    }
-
-    if (foundEntry) {
-      if (cleanLemma && cleanLemma !== cleanWord) {
-        return {
-          ...foundEntry,
-          conjugatedForm: cleanWord,
-        };
-      }
-      return foundEntry;
-    }
-
-    return null;
+    const result = await lookupJmdict(word, lemma);
+    return result.primaryEntry;
   },
 
   async searchDictionary(query: string, limit = 20): Promise<DictionaryEntry[]> {

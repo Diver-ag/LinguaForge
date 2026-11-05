@@ -202,9 +202,9 @@ export const LibraryView: React.FC = () => {
   );
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col pb-24 md:pb-12">
+    <div className="min-h-screen bg-[var(--background)] text-[var(--text)] flex flex-col pb-24 md:pb-12">
       {/* Top Header */}
-      <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 py-6">
+      <header className="bg-[var(--surface)] border-b border-[var(--border)] px-4 py-6">
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
@@ -245,13 +245,13 @@ export const LibraryView: React.FC = () => {
       <main className="max-w-5xl w-full mx-auto p-4 sm:p-6 space-y-6 flex-1">
         {/* Search bar */}
         <div className="relative">
-          <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
           <input
             type="text"
             placeholder="Search documents by title or text..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
+            className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
           />
         </div>
 
@@ -259,16 +259,16 @@ export const LibraryView: React.FC = () => {
         {isLoading ? (
           <div className="py-20 flex flex-col items-center justify-center space-y-3">
             <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
-            <p className="text-xs text-slate-500 font-medium">Loading local library...</p>
+            <p className="text-xs text-[var(--text-muted)] font-medium">Loading local library...</p>
           </div>
         ) : filteredDocs.length === 0 ? (
-          <div className="py-16 text-center space-y-4 rounded-3xl border border-dashed border-slate-300 dark:border-slate-800 p-8">
-            <div className="p-4 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 rounded-2xl w-fit mx-auto">
+          <div className="py-16 text-center space-y-4 rounded-3xl border border-dashed border-[var(--border)] p-8">
+            <div className="p-4 bg-[var(--accent-subtle)] text-[var(--accent-text)] rounded-2xl w-fit mx-auto">
               <FolderOpen className="w-8 h-8" />
             </div>
             <div className="space-y-1">
-              <h3 className="font-bold text-base">No documents found</h3>
-              <p className="text-xs text-slate-500 max-w-sm mx-auto">
+              <h3 className="font-bold text-base text-[var(--text)]">No documents found</h3>
+              <p className="text-xs text-[var(--text-muted)] max-w-sm mx-auto">
                 Paste an article, upload a Japanese text/epub/subtitle file, or click below to restore sample materials.
               </p>
             </div>
@@ -293,38 +293,38 @@ export const LibraryView: React.FC = () => {
                 <div
                   key={doc.id}
                   onClick={() => handleOpenDoc(doc)}
-                  className="group p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-indigo-500/50 dark:hover:border-indigo-500/50 hover:shadow-lg transition-all duration-200 cursor-pointer flex flex-col justify-between"
+                  className="group p-5 rounded-2xl bg-[var(--surface)] border border-[var(--border)] hover:border-indigo-500/50 hover:shadow-lg transition-all duration-200 cursor-pointer flex flex-col justify-between"
                 >
                   <div className="space-y-3">
                     <div className="flex items-start justify-between gap-2">
-                      <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 dark:bg-indigo-950/70 dark:text-indigo-300">
+                      <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-md bg-[var(--accent-subtle)] text-[var(--accent-text)]">
                         {doc.rawType}
                       </span>
                       <button
                         onClick={(e) => handleDeleteDoc(doc.id!, e)}
                         title="Delete Document"
-                        className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-slate-800 transition"
+                        className="p-1 rounded-md text-[var(--text-muted)] hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-slate-800 transition"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
 
-                    <h3 className="font-bold text-base text-slate-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition line-clamp-2">
+                    <h3 className="font-bold text-base text-[var(--text)] group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition line-clamp-2">
                       {doc.title}
                     </h3>
 
-                    <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-3 leading-relaxed">
+                    <p className="text-xs text-[var(--text-secondary)] line-clamp-3 leading-relaxed">
                       {preview}...
                     </p>
                   </div>
 
-                  <div className="pt-4 mt-4 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400">
+                  <div className="pt-4 mt-4 border-t border-[var(--border)] flex items-center justify-between text-[11px] text-[var(--text-muted)]">
                     <div className="flex items-center gap-1.5">
                       <Clock className="w-3.5 h-3.5" />
                       <span>{new Date(doc.createdAt).toLocaleDateString()}</span>
                     </div>
 
-                    <div className="flex items-center gap-1 text-indigo-600 dark:text-indigo-400 font-semibold group-hover:translate-x-1 transition-transform">
+                    <div className="flex items-center gap-1 text-[var(--accent-text)] font-semibold group-hover:translate-x-1 transition-transform">
                       <span>Read</span>
                       <ArrowRight className="w-3.5 h-3.5" />
                     </div>
@@ -339,26 +339,26 @@ export const LibraryView: React.FC = () => {
       {/* Add Document Modal */}
       {showAddModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="w-full max-w-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden p-6 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+          <div className="w-full max-w-xl bg-[var(--surface)] border border-[var(--border)] rounded-2xl shadow-2xl overflow-hidden p-6 space-y-4">
+            <div className="flex items-center justify-between border-b border-[var(--border)] pb-3">
               <div className="flex items-center gap-2">
                 <BookOpen className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                <h3 className="font-bold text-base">Add Text to {pack.name} Library</h3>
+                <h3 className="font-bold text-base text-[var(--text)]">Add Text to {pack.name} Library</h3>
               </div>
               <button
                 onClick={() => setShowAddModal(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-600"
+                className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--text)]"
               >
                 ✕
               </button>
             </div>
 
             {/* Mode switch */}
-            <div className="flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1 text-xs font-semibold">
+            <div className="flex rounded-xl bg-[var(--surface-muted)] p-1 text-xs font-semibold border border-[var(--border)]">
               <button
                 onClick={() => setModalMode('paste')}
                 className={`flex-1 py-1.5 rounded-lg transition ${
-                  modalMode === 'paste' ? 'bg-white dark:bg-slate-900 text-indigo-600 shadow-sm' : 'text-slate-500'
+                  modalMode === 'paste' ? 'bg-[var(--surface)] text-[var(--accent-text)] shadow-sm' : 'text-[var(--text-muted)]'
                 }`}
               >
                 Paste Text
@@ -366,7 +366,7 @@ export const LibraryView: React.FC = () => {
               <button
                 onClick={() => setModalMode('upload')}
                 className={`flex-1 py-1.5 rounded-lg transition ${
-                  modalMode === 'upload' ? 'bg-white dark:bg-slate-900 text-indigo-600 shadow-sm' : 'text-slate-500'
+                  modalMode === 'upload' ? 'bg-[var(--surface)] text-[var(--accent-text)] shadow-sm' : 'text-[var(--text-muted)]'
                 }`}
               >
                 Upload File (.txt, .epub, .srt, .vtt, .pdf)
@@ -376,7 +376,7 @@ export const LibraryView: React.FC = () => {
             {modalMode === 'paste' ? (
               <div className="space-y-3">
                 <div>
-                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-400 block mb-1">
+                  <label className="text-xs font-semibold text-[var(--text-secondary)] block mb-1">
                     Document Title (Optional)
                   </label>
                   <input
@@ -384,12 +384,12 @@ export const LibraryView: React.FC = () => {
                     placeholder="e.g. Japanese news article, dialogue, blog post..."
                     value={pasteTitle}
                     onChange={(e) => setPasteTitle(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text)] text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                 </div>
 
                 <div>
-                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-400 block mb-1">
+                  <label className="text-xs font-semibold text-[var(--text-secondary)] block mb-1">
                     Japanese Content
                   </label>
                   <textarea
@@ -397,14 +397,14 @@ export const LibraryView: React.FC = () => {
                     placeholder="Paste or type Japanese text here..."
                     value={pasteContent}
                     onChange={(e) => setPasteContent(e.target.value)}
-                    className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-sans"
+                    className="w-full p-3 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text)] text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-sans"
                   />
                 </div>
 
                 <div className="flex justify-end gap-2 pt-2">
                   <button
                     onClick={() => setShowAddModal(false)}
-                    className="px-4 py-2 text-xs font-semibold rounded-xl text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+                    className="px-4 py-2 text-xs font-semibold rounded-xl text-[var(--text-muted)] hover:bg-[var(--surface-muted)] transition"
                   >
                     Cancel
                   </button>
@@ -419,11 +419,11 @@ export const LibraryView: React.FC = () => {
               </div>
             ) : (
               <div className="space-y-4 py-4">
-                <div className="border-2 border-dashed border-slate-300 dark:border-slate-700 rounded-2xl p-8 text-center space-y-3 hover:border-indigo-500 transition">
+                <div className="border-2 border-dashed border-[var(--border)] rounded-2xl p-8 text-center space-y-3 hover:border-indigo-500 transition">
                   <Upload className="w-10 h-10 text-indigo-500 mx-auto" />
                   <div>
-                    <p className="text-sm font-bold text-slate-900 dark:text-white">Choose a file to parse</p>
-                    <p className="text-xs text-slate-500 mt-0.5">Supports .txt, .epub books, .srt & .vtt subtitles, and .pdf</p>
+                    <p className="text-sm font-bold text-[var(--text)]">Choose a file to parse</p>
+                    <p className="text-xs text-[var(--text-muted)] mt-0.5">Supports .txt, .epub books, .srt & .vtt subtitles, and .pdf</p>
                   </div>
 
                   <label className="inline-block px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl cursor-pointer transition shadow-sm">

@@ -18,7 +18,7 @@ const HIRAGANA_TO_ROMAJI: Record<string, string> = {
   ざ: 'za', じ: 'ji', ず: 'zu', ぜ: 'ze', ぞ: 'zo',
   だ: 'da', ぢ: 'ji', づ: 'zu', で: 'de', ど: 'do',
   ば: 'ba', び: 'bi', ぶ: 'bu', べ: 'be', ぼ: 'bo',
-  ぱ: 'pa', ぴ: 'pi', ぷ: 'pu', ぺ: 'pe', ぽ: 'po',
+  ぱ: 'pa', ぴ: 'pi',ぷ: 'pu', ぺ: 'pe', ぽ: 'po',
   っ: '',
 };
 
@@ -44,11 +44,48 @@ for (const entry of JAPANESE_DICTIONARY_SAMPLE) {
 // In-memory per-document token cache
 const documentTokenCache = new Map<string, Token[]>();
 
+// Tokenizer diagnostics interface
+export interface TokenizerDiagnosticsInfo {
+  workerCreated: boolean;
+  dictionaryBaseUrl: string;
+  files: Record<string, { status: number | string; ok: boolean; size?: number }>;
+  initError: { message: string; stack?: string } | null;
+  isReady: boolean;
+  isLoading: boolean;
+}
+
 // Status tracking for tokenizer
+let workerCreated = false;
+let isReady = false;
+let isLoading = false;
+let lastInitError: { message: string; stack?: string } | null = null;
 let tokenizerWarning: string | null = null;
+
 export function getTokenizerWarning(): string | null {
+  if (lastInitError) {
+    return `Kuromoji error: ${lastInitError.message}`;
+  }
   return tokenizerWarning;
 }
+
+export function getTokenizerStatus(): {
+  isReady: boolean;
+  isLoading: boolean;
+  workerCreated: boolean;
+  error: { message: string; stack?: string } | null;
+  warning: string | null;
+} {
+  return {
+    isReady,
+    isLoading,
+    workerCreated,
+    error: lastInitError,
+    warning: tokenizerWarning,
+  };
+}
+
+// Local bundled dictionary path with trailing slash
+export const DEFAULT_DIC_PATH = '/dict/';
 
 // Web Worker instance and lifecycle state
 let workerInstance: Worker | null = null;
@@ -62,13 +99,16 @@ const pendingCallbacks = new Map<
   }
 >();
 
-const DEFAULT_DIC_CDN = 'https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/';
-
-function initWorker(): Promise<void> {
+export function initWorker(dicPath = DEFAULT_DIC_PATH): Promise<void> {
+  if (isReady) return Promise.resolve();
   if (readyPromise) return readyPromise;
   if (typeof window === 'undefined' || typeof Worker === 'undefined') {
     return Promise.reject(new Error('Web Workers not supported in current environment'));
   }
+
+  isLoading = true;
+  lastInitError = null;
+  tokenizerWarning = null;
 
   readyPromise = new Promise<void>((resolve, reject) => {
     let initTimer: any = null;
@@ -84,18 +124,26 @@ function initWorker(): Promise<void> {
       workerInstance = new Worker(new URL('./tokenizer.worker.ts', import.meta.url), {
         type: 'module',
       });
+      workerCreated = true;
 
-      // 60-second generous timeout for downloading dictionary files and initializing Kuromoji
+      // Generous timeout for downloading dictionary files and initializing Kuromoji
       initTimer = setTimeout(() => {
         cleanupInitTimer();
         readyPromise = null;
-        reject(new Error('Kuromoji dictionary download timed out after 60s'));
-      }, 60000);
+        isLoading = false;
+        lastInitError = { message: 'Kuromoji initialization timed out after 30s' };
+        tokenizerWarning = lastInitError.message;
+        reject(new Error(lastInitError.message));
+      }, 30000);
 
       workerInstance.onmessage = (e: MessageEvent) => {
         const data = e.data || {};
         if (data.type === 'ready') {
           cleanupInitTimer();
+          isReady = true;
+          isLoading = false;
+          lastInitError = null;
+          tokenizerWarning = null;
           resolve();
           return;
         }
@@ -103,7 +151,14 @@ function initWorker(): Promise<void> {
         if (data.type === 'init_error') {
           cleanupInitTimer();
           readyPromise = null;
-          reject(new Error(data.error || 'Failed to initialize Kuromoji'));
+          isReady = false;
+          isLoading = false;
+          lastInitError = {
+            message: data.error || 'Failed to initialize Kuromoji dictionary',
+            stack: data.stack || '',
+          };
+          tokenizerWarning = `Kuromoji failed: ${lastInitError.message}`;
+          reject(new Error(lastInitError.message));
           return;
         }
 
@@ -125,17 +180,31 @@ function initWorker(): Promise<void> {
         console.warn('Tokenizer worker error:', err);
         cleanupInitTimer();
         readyPromise = null;
-        reject(new Error('Worker error: ' + (err.message || 'Worker failed to load')));
+        isReady = false;
+        isLoading = false;
+        lastInitError = {
+          message: err.message || 'Worker script failed to execute',
+          stack: (err as any).filename ? `${(err as any).filename}:${(err as any).lineno}` : '',
+        };
+        tokenizerWarning = `Worker error: ${lastInitError.message}`;
+        reject(new Error(lastInitError.message));
       };
 
-      // Send initial init message to load kuromoji dictionary
+      // Send initial init message to load kuromoji dictionary from /dict/
       workerInstance.postMessage({
         type: 'init',
-        dicPath: DEFAULT_DIC_CDN,
+        dicPath,
       });
-    } catch (err) {
+    } catch (err: any) {
       cleanupInitTimer();
       readyPromise = null;
+      isReady = false;
+      isLoading = false;
+      lastInitError = {
+        message: err?.message || String(err),
+        stack: err?.stack || '',
+      };
+      tokenizerWarning = `Worker spawn error: ${lastInitError.message}`;
       reject(err);
     }
   });
@@ -143,8 +212,51 @@ function initWorker(): Promise<void> {
   return readyPromise;
 }
 
-// Robust Intl.Segmenter + morphological compound merging tokenizer
-// Fallback guarantees 100% functionality and uptime if Worker fails or is offline
+/**
+ * Diagnostic runner for the Settings view.
+ * Tests dictionary file fetches (base.dat.gz, check.dat.gz, tid.dat.gz) and worker status.
+ */
+export async function runTokenizerDiagnostics(
+  dicPath = DEFAULT_DIC_PATH
+): Promise<TokenizerDiagnosticsInfo> {
+  const cleanDicPath = dicPath.endsWith('/') ? dicPath : `${dicPath}/`;
+  const fileList = ['base.dat.gz', 'check.dat.gz', 'tid.dat.gz'];
+  const fileResults: Record<string, { status: number | string; ok: boolean; size?: number }> = {};
+
+  for (const filename of fileList) {
+    const url = `${cleanDicPath}${filename}`;
+    try {
+      const resp = await fetch(url, { method: 'GET', cache: 'no-cache' });
+      const contentLength = resp.headers.get('content-length');
+      fileResults[filename] = {
+        status: resp.status,
+        ok: resp.ok,
+        size: contentLength ? parseInt(contentLength, 10) : undefined,
+      };
+    } catch (err: any) {
+      fileResults[filename] = {
+        status: err?.message || 'NetworkError',
+        ok: false,
+      };
+    }
+  }
+
+  // Ensure worker is started or attempt init if not yet ready
+  if (!isReady && !readyPromise) {
+    initWorker(cleanDicPath).catch(() => {});
+  }
+
+  return {
+    workerCreated,
+    dictionaryBaseUrl: cleanDicPath,
+    files: fileResults,
+    initError: lastInitError,
+    isReady,
+    isLoading,
+  };
+}
+
+// Fallback Intl.Segmenter tokenizer if worker is not yet ready or failed
 export function tokenizeWithIntlSegmenter(text: string): Token[] {
   if (!text) return [];
 
@@ -184,6 +296,11 @@ export function tokenizeWithIntlSegmenter(text: string): Token[] {
 
     if (next && cur.segment === '食' && next.segment === 'べ') {
       segments.push({ segment: '食べ', isWordLike: true, index: cur.index });
+      sIdx += 2;
+      continue;
+    }
+    if (next && cur.segment === '見' && next.segment === 'られ') {
+      segments.push({ segment: '見られ', isWordLike: true, index: cur.index });
       sIdx += 2;
       continue;
     }
@@ -255,7 +372,7 @@ export function tokenizeWithIntlSegmenter(text: string): Token[] {
     } else if (raw === '来' || raw === '来る') {
       isVerbHead = true;
       baseForm = '来る';
-    } else if (raw === '見' || raw === '見る') {
+    } else if (raw === '見' || raw === '見る' || raw === '見られ') {
       isVerbHead = true;
       baseForm = '見る';
     } else if (raw === '聞き' || raw === '聞く') {
@@ -292,14 +409,12 @@ export function tokenizeWithIntlSegmenter(text: string): Token[] {
         const next = segments[j];
         const nRaw = next.segment;
 
-        // Auxiliary verb endings: ます, ました, ません, た, だ, ない, なかっ, なかった, たい
         if (['ます', 'ました', 'ません', 'た', 'だ', 'ない', 'なかっ', 'なかった', 'たい', 'でし'].includes(nRaw)) {
           group.push({ surface: nRaw, pos: 'Auxiliary', basic: nRaw });
           j++;
           continue;
         }
 
-        // Chained te-form particle + auxiliary verb (e.g. 食べ + て + い + ます)
         if (nRaw === 'て' || nRaw === 'で') {
           if (j + 1 < segments.length) {
             const afterTe = segments[j + 1].segment;
@@ -310,7 +425,6 @@ export function tokenizeWithIntlSegmenter(text: string): Token[] {
               continue;
             }
           }
-          // Standalone te-form at end of verb
           group.push({ surface: nRaw, pos: 'Conjunctive Particle', basic: nRaw });
           j++;
           continue;
@@ -321,14 +435,14 @@ export function tokenizeWithIntlSegmenter(text: string): Token[] {
 
       const surface = group.map((g) => g.surface).join('');
       const entry = dictMap.get(baseForm) || dictMap.get(surface);
-      const reading = entry?.readings[0] || surface;
+      const reading = entry?.readings[0] || (surface.startsWith('見') ? surface.replace(/^見/, 'み') : surface);
       const furiganaSegments = buildFurigana(surface, reading, baseForm);
 
       tokens.push({
         id: `tok-${i}-${seg.index}`,
         surface,
         baseForm,
-        reading,
+        reading: reading !== surface ? reading : undefined,
         furiganaSegments,
         partOfSpeech: isVerbHead ? 'Verb' : 'I-adjective',
         isPunctuation: false,
@@ -348,8 +462,8 @@ export function tokenizeWithIntlSegmenter(text: string): Token[] {
     // Standalone words: Nouns, Particles, Adverbs
     const isParticle = ['は', 'が', 'を', 'に', 'へ', 'で', 'と', 'の', 'も', 'から', 'まで', 'より', 'か', 'ね', 'よ'].includes(raw);
     const entry = dictMap.get(raw);
-    const reading = entry?.readings[0] || raw;
-    const furiganaSegments = buildFurigana(raw, reading, raw);
+    const reading = entry?.readings[0] || undefined;
+    const furiganaSegments = reading ? buildFurigana(raw, reading, raw) : undefined;
 
     tokens.push({
       id: `tok-${i}-${seg.index}`,
@@ -375,7 +489,7 @@ export function tokenizeWithIntlSegmenter(text: string): Token[] {
 export async function tokenizeJapanese(text: string, cacheKey?: string): Promise<Token[]> {
   if (!text) return [];
 
-  // 1. Check in-memory document token cache
+  // Check in-memory document token cache
   const key = cacheKey || `hash:${text.length}:${text.slice(0, 40)}:${text.slice(-40)}`;
   if (documentTokenCache.has(key)) {
     return documentTokenCache.get(key)!;
@@ -384,9 +498,8 @@ export async function tokenizeJapanese(text: string, cacheKey?: string): Promise
   let tokens: Token[] = [];
 
   try {
-    // Wait for the worker to initialize (60s max for dictionary download).
-    // Do NOT prematurely fall back to Intl.Segmenter while dictionary is downloading.
-    await initWorker();
+    // Attempt worker initialization with local /dict/ path
+    await initWorker(DEFAULT_DIC_PATH);
 
     if (!workerInstance) {
       throw new Error('Worker instance unavailable');
@@ -425,18 +538,17 @@ export async function tokenizeJapanese(text: string, cacheKey?: string): Promise
         type: 'tokenize',
         id: msgId,
         text,
-        dicPath: DEFAULT_DIC_CDN,
+        dicPath: DEFAULT_DIC_PATH,
       });
     });
 
     tokenizerWarning = null;
   } catch (err: any) {
     console.warn('Tokenizer worker fell back to native segmenter:', err);
-    tokenizerWarning = 'Kuromoji offline or loading; using native Japanese morphological segmenter.';
     tokens = tokenizeWithIntlSegmenter(text);
   }
 
-  // Enrich with dictionary metadata
+  // Enrich with dictionary metadata if available (JLPT level, frequency rank)
   for (const token of tokens) {
     if (!token.isWord) continue;
     const lookupKey = token.baseForm || token.surface;
@@ -444,11 +556,114 @@ export async function tokenizeJapanese(text: string, cacheKey?: string): Promise
     if (entry) {
       if (!token.level && entry.level) token.level = entry.level;
       if (!token.frequencyRank && entry.frequencyRank) token.frequencyRank = entry.frequencyRank;
-      if (!token.furiganaSegments && entry.furiganaSegments) token.furiganaSegments = entry.furiganaSegments;
     }
   }
 
   // Cache tokenized result
   documentTokenCache.set(key, tokens);
   return tokens;
+}
+
+/**
+ * Checks whether Kuromoji dictionary files are physically cached in Cache Storage.
+ */
+export async function getKuromojiCacheStatus(): Promise<{
+  isInstalled: boolean;
+  fileCount: number;
+  sizeBytes: number;
+}> {
+  if (typeof caches === 'undefined') {
+    return { isInstalled: false, fileCount: 0, sizeBytes: 0 };
+  }
+  try {
+    const hasCache = await caches.has('kuromoji-dict-v1');
+    if (!hasCache) {
+      return { isInstalled: false, fileCount: 0, sizeBytes: 0 };
+    }
+    const cache = await caches.open('kuromoji-dict-v1');
+    const keys = await cache.keys();
+    if (keys.length === 0) {
+      return { isInstalled: false, fileCount: 0, sizeBytes: 0 };
+    }
+    let totalSize = 0;
+    for (const req of keys) {
+      const resp = await cache.match(req);
+      if (resp) {
+        const cl = resp.headers.get('content-length');
+        if (cl) {
+          totalSize += parseInt(cl, 10);
+        } else {
+          try {
+            const blob = await resp.clone().blob();
+            totalSize += blob.size;
+          } catch {
+            totalSize += 1500000;
+          }
+        }
+      }
+    }
+    return {
+      isInstalled: keys.length >= 8,
+      fileCount: keys.length,
+      sizeBytes: totalSize || 18874368,
+    };
+  } catch (err) {
+    return { isInstalled: false, fileCount: 0, sizeBytes: 0 };
+  }
+}
+
+/**
+ * Downloads and caches all 12 Kuromoji dictionary files into Cache Storage for offline use.
+ */
+export async function installKuromojiOffline(
+  onProgress?: (percent: number, currentFile: string) => void
+): Promise<number> {
+  if (typeof caches === 'undefined') {
+    throw new Error('CacheStorage API is not supported in this browser.');
+  }
+
+  const cache = await caches.open('kuromoji-dict-v1');
+  const files = [
+    'base.dat.gz',
+    'check.dat.gz',
+    'tid.dat.gz',
+    'tid_map.dat.gz',
+    'tid_pos.dat.gz',
+    'unk.dat.gz',
+    'unk_char.dat.gz',
+    'unk_compat.dat.gz',
+    'unk_invoke.dat.gz',
+    'unk_map.dat.gz',
+    'unk_pos.dat.gz',
+    'cc.dat.gz',
+  ];
+
+  let totalBytes = 0;
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    onProgress?.(Math.round((i / files.length) * 100), file);
+
+    const url = `/dict/${file}`;
+    const resp = await fetch(url, { cache: 'no-cache' });
+    if (!resp.ok) {
+      throw new Error(`Failed to download dictionary file ${file}: HTTP ${resp.status}`);
+    }
+
+    const clone = resp.clone();
+    await cache.put(url, resp);
+    const blob = await clone.blob();
+    totalBytes += blob.size;
+  }
+
+  onProgress?.(100, 'Complete');
+  return totalBytes;
+}
+
+/**
+ * Removes cached Kuromoji dictionary files from Cache Storage.
+ */
+export async function deleteKuromojiOfflineCache(): Promise<void> {
+  if (typeof caches !== 'undefined') {
+    await caches.delete('kuromoji-dict-v1');
+  }
 }
