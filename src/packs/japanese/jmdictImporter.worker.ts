@@ -2,14 +2,15 @@ import Dexie from 'dexie';
 import JSZip from 'jszip';
 import { deriveFrequencyInfo, deriveBandFromRank } from './jmdictFrequency';
 import { computeFingerprint } from '../fingerprint';
-import type { JmdictEntryItem, DictionaryMetaItem, ImportRecord, ImportKind } from '../../db/db';
+import type { JmdictEntryItem, DictionaryMetaItem, ImportRecord, ImportKind, KanjiEntryItem } from '../../db/db';
 
-// Worker DB connection matching LinguaForgeDatabase v5
+// Worker DB connection matching LinguaForgeDatabase v6
 class WorkerLinguaForgeDB extends Dexie {
   jmdictEntries!: Dexie.Table<JmdictEntryItem, string>;
   dictionaryMeta!: Dexie.Table<DictionaryMetaItem, string>;
   importedData!: Dexie.Table<any, number>;
   imports!: Dexie.Table<ImportRecord, string>;
+  kanjiEntries!: Dexie.Table<KanjiEntryItem, string>;
 
   constructor() {
     super('LinguaForgeDB');
@@ -35,6 +36,9 @@ class WorkerLinguaForgeDB extends Dexie {
     });
     this.version(5).stores({
       jmdictEntries: 'id, languageCode, *forms, *importIds, *kinds, priorityScore, frequencyBand, jlptLevel',
+    });
+    this.version(6).stores({
+      kanjiEntries: 'character, jlptLevel, *importIds',
     });
   }
 }
@@ -81,6 +85,39 @@ function parseCsvRows(text: string): { headers: string[]; rows: string[][] } {
     return { headers: first, rows: parsedLines.slice(1) };
   }
   return { headers: [], rows: parsedLines };
+}
+
+function inferLevelFromFileName(fileName: string): string | null {
+  const lower = fileName.toLowerCase();
+  const m = lower.match(/\b(n[1-5])\b|jlpt[-_ ]?([1-5])|[-_ ](n[1-5])[-_ .]/i);
+  if (m) {
+    const raw = m[1] || m[2] || m[3];
+    return raw.toUpperCase().startsWith('N') ? raw.toUpperCase() : `N${raw}`;
+  }
+  if (lower.includes('n5')) return 'N5';
+  if (lower.includes('n4')) return 'N4';
+  if (lower.includes('n3')) return 'N3';
+  if (lower.includes('n2')) return 'N2';
+  if (lower.includes('n1')) return 'N1';
+  return null;
+}
+
+function cleanJlptLevel(raw: string, fallbackLevel: string | null = null): string {
+  let cleaned = (raw || '').trim().toUpperCase();
+  if (/^[1-5]$/.test(cleaned)) cleaned = `N${cleaned}`;
+  if (/^JLPTN?[1-5]$/.test(cleaned)) cleaned = `N${cleaned.slice(-1)}`;
+  if (/^N[1-5]$/.test(cleaned)) return cleaned;
+  if (fallbackLevel && /^N[1-5]$/.test(fallbackLevel)) return fallbackLevel;
+  return 'No level';
+}
+
+function isEasierLevel(candidateLevel: string, existingLevel: string): boolean {
+  const cNum = parseInt(candidateLevel.replace(/\D/g, ''), 10);
+  const eNum = parseInt(existingLevel.replace(/\D/g, ''), 10);
+  if (!eNum || isNaN(eNum)) return true;
+  if (!cNum || isNaN(cNum)) return false;
+  // N5 (5) > N4 (4) -> higher number is easier
+  return cNum > eNum;
 }
 
 // Convert raw buffer or string to JSON text, handling .zip and .gz
@@ -233,6 +270,8 @@ self.addEventListener('message', async (e: MessageEvent) => {
       explicitKind,
       forceReplace = false,
       existingImportId,
+      columnMapping,
+      files,
     } = data;
 
     try {
@@ -281,6 +320,14 @@ self.addEventListener('message', async (e: MessageEvent) => {
         const lowerName = effectiveFileName.toLowerCase();
         if (lowerName.includes('name') || lowerName.includes('jmnedict')) {
           kind = 'names';
+        } else if (
+          lowerName.includes('kanji-level') ||
+          lowerName.includes('kanji_level') ||
+          lowerName.includes('jlpt-kanji') ||
+          lowerName.includes('jlpt_kanji') ||
+          lowerName.includes('kanjilevel')
+        ) {
+          kind = 'kanji-levels';
         } else if (lowerName.includes('kanji') || lowerName.includes('kanjidic')) {
           kind = 'kanji';
         } else if (lowerName.includes('sentence') || lowerName.includes('tatoeba')) {
@@ -325,20 +372,285 @@ self.addEventListener('message', async (e: MessageEvent) => {
       // If force replacing, remove previous rows/references for this importId
       if (forceReplace && (existingImportId || duplicate?.importId)) {
         const targetId = existingImportId || duplicate!.importId;
-        const oldEntries = await workerDb.jmdictEntries
-          .where('importIds')
-          .equals(targetId)
-          .toArray();
+        if (kind === 'kanji-levels') {
+          const oldKanji = await workerDb.kanjiEntries
+            .where('importIds')
+            .equals(targetId)
+            .toArray();
 
-        for (const entry of oldEntries) {
-          const rem = (entry.importIds || []).filter((id) => id !== targetId);
-          if (rem.length === 0) {
-            await workerDb.jmdictEntries.delete(entry.id);
-          } else {
-            entry.importIds = rem;
-            await workerDb.jmdictEntries.put(entry);
+          for (const k of oldKanji) {
+            const rem = (k.importIds || []).filter((id) => id !== targetId);
+            if (rem.length === 0) {
+              await workerDb.kanjiEntries.delete(k.character);
+            } else {
+              k.importIds = rem;
+              await workerDb.kanjiEntries.put(k);
+            }
+          }
+        } else {
+          const oldEntries = await workerDb.jmdictEntries
+            .where('importIds')
+            .equals(targetId)
+            .toArray();
+
+          for (const entry of oldEntries) {
+            const rem = (entry.importIds || []).filter((id) => id !== targetId);
+            if (rem.length === 0) {
+              await workerDb.jmdictEntries.delete(entry.id);
+            } else {
+              entry.importIds = rem;
+              await workerDb.jmdictEntries.put(entry);
+            }
           }
         }
+      }
+
+      // Dedicated pipeline for kanji-levels (independent of vocabulary matching)
+      if (kind === 'kanji-levels') {
+        const filesToProcess: Array<{ fileName: string; text: string; sizeBytes?: number; mapping?: any }> = [];
+
+        if (Array.isArray(files) && files.length > 0) {
+          for (const f of files) {
+            const fText = typeof f.data === 'string' ? f.data : f.text || '';
+            filesToProcess.push({
+              fileName: f.fileName || f.name || 'kanji.csv',
+              text: fText,
+              sizeBytes: f.size || fText.length,
+              mapping: f.columnMapping || columnMapping,
+            });
+          }
+        } else {
+          filesToProcess.push({
+            fileName: effectiveFileName,
+            text,
+            sizeBytes,
+            mapping: columnMapping,
+          });
+        }
+
+        self.postMessage({
+          type: 'status',
+          message: `Parsing kanji data from ${filesToProcess.length} file(s)...`,
+        });
+
+        const perLevelCounts: Record<'N5' | 'N4' | 'N3' | 'N2' | 'N1' | 'No level', number> = {
+          N5: 0,
+          N4: 0,
+          N3: 0,
+          N2: 0,
+          N1: 0,
+          'No level': 0,
+        };
+        let duplicateCount = 0;
+        let skippedCount = 0;
+        const kanjiMap = new Map<string, KanjiEntryItem>();
+
+        // Load existing entries to detect duplicates across imports and retain the easier level
+        const existingEntries = await workerDb.kanjiEntries.toArray();
+        const existingDbMap = new Map<string, KanjiEntryItem>();
+        for (const entry of existingEntries) {
+          existingDbMap.set(entry.character, entry);
+        }
+
+        for (const fileObj of filesToProcess) {
+          const fName = fileObj.fileName;
+          const inferredLevel = inferLevelFromFileName(fName);
+          const { headers, rows } = parseCsvRows(fileObj.text);
+
+          const mapping = fileObj.mapping || {};
+          let charIdx = mapping.charCol ?? mapping.kanjiCol ?? -1;
+          let lvlIdx = mapping.levelCol ?? mapping.jlptCol ?? -1;
+          let readingIdx = mapping.readingCol ?? mapping.kanaCol ?? -1;
+          let onIdx = mapping.onCol ?? -1;
+          let kunIdx = mapping.kunCol ?? -1;
+          let meaningIdx = mapping.meaningCol ?? mapping.glossCol ?? -1;
+          let strokeIdx = mapping.strokeCol ?? -1;
+
+          // Auto-detect columns from headers if not explicitly specified
+          if (charIdx === -1) {
+            charIdx = headers.findIndex((h) =>
+              h.includes('kanji') || h.includes('char') || h.includes('character') || h === 'word' || h === 'expression'
+            );
+          }
+          if (lvlIdx === -1) {
+            lvlIdx = headers.findIndex((h) => h.includes('level') || h.includes('jlpt') || h.includes('grade'));
+          }
+          if (readingIdx === -1) {
+            readingIdx = headers.findIndex((h) => h.includes('reading') || h.includes('kana') || h.includes('yomi'));
+          }
+          if (onIdx === -1) {
+            onIdx = headers.findIndex((h) => h.includes('on') || h.includes('onyomi'));
+          }
+          if (kunIdx === -1) {
+            kunIdx = headers.findIndex((h) => h.includes('kun') || h.includes('kunyomi'));
+          }
+          if (meaningIdx === -1) {
+            meaningIdx = headers.findIndex((h) =>
+              h.includes('mean') || h.includes('definition') || h.includes('english') || h.includes('gloss')
+            );
+          }
+          if (strokeIdx === -1) {
+            strokeIdx = headers.findIndex((h) => h.includes('stroke') || h.includes('strokes'));
+          }
+
+          // If still -1, inspect rows for single kanji column
+          if (charIdx === -1 && rows.length > 0) {
+            const sampleRows = rows.slice(0, 5);
+            for (let c = 0; c < (sampleRows[0]?.length || 0); c++) {
+              if (sampleRows.every((r) => r[c] && /^[\u4e00-\u9faf\u3400-\u4dbf々〆〇]$/.test(r[c].trim()))) {
+                charIdx = c;
+                break;
+              }
+            }
+            if (charIdx === -1) charIdx = 0;
+          }
+
+          for (const row of rows) {
+            const rawChar = (row[charIdx] || '').trim();
+            // Validate single kanji ideograph
+            if (!rawChar || !/^[\u4e00-\u9faf\u3400-\u4dbf々〆〇]$/.test(rawChar)) {
+              skippedCount++;
+              continue;
+            }
+
+            // Extract level
+            const rawLvl = lvlIdx !== -1 ? row[lvlIdx] : '';
+            const lvl = cleanJlptLevel(rawLvl, inferredLevel);
+
+            // Extract readings
+            const onReadings: string[] = [];
+            const kunReadings: string[] = [];
+            if (onIdx !== -1 && row[onIdx]) {
+              onReadings.push(...row[onIdx].split(/[,;/、\s]+/).map((s) => s.trim()).filter(Boolean));
+            }
+            if (kunIdx !== -1 && row[kunIdx]) {
+              kunReadings.push(...row[kunIdx].split(/[,;/、\s]+/).map((s) => s.trim()).filter(Boolean));
+            }
+            if (readingIdx !== -1 && row[readingIdx] && onReadings.length === 0 && kunReadings.length === 0) {
+              const rParts = row[readingIdx].split(/[,;/、\s]+/).map((s) => s.trim()).filter(Boolean);
+              for (const r of rParts) {
+                if (/[\u30a0-\u30ff]/.test(r)) onReadings.push(r);
+                else kunReadings.push(r);
+              }
+            }
+
+            // Extract meanings
+            const meanings: string[] = [];
+            if (meaningIdx !== -1 && row[meaningIdx]) {
+              meanings.push(...row[meaningIdx].split(/[,;/|]+/).map((s) => s.trim()).filter(Boolean));
+            }
+
+            // Extract strokes
+            let strokeCount: number | undefined = undefined;
+            if (strokeIdx !== -1 && row[strokeIdx]) {
+              const parsedStroke = parseInt(row[strokeIdx].replace(/\D/g, ''), 10);
+              if (!isNaN(parsedStroke) && parsedStroke > 0) strokeCount = parsedStroke;
+            }
+
+            // Duplicate detection across current batch and existing database
+            const existingInBatch = kanjiMap.get(rawChar);
+            const existingInDb = existingDbMap.get(rawChar);
+
+            if (existingInBatch || existingInDb) {
+              duplicateCount++;
+              const current = existingInBatch || existingInDb!;
+              // Keep easier level (N5 > N4 > N3 > N2 > N1)
+              if (isEasierLevel(lvl, current.jlptLevel)) {
+                current.jlptLevel = lvl;
+              }
+              // Merge readings, meanings, strokeCount
+              if (onReadings.length > 0) {
+                const combined = Array.from(new Set([...(current.readings?.on || []), ...onReadings]));
+                current.readings = { ...current.readings, on: combined };
+              }
+              if (kunReadings.length > 0) {
+                const combined = Array.from(new Set([...(current.readings?.kun || []), ...kunReadings]));
+                current.readings = { ...current.readings, kun: combined };
+              }
+              if (meanings.length > 0) {
+                current.meanings = Array.from(new Set([...(current.meanings || []), ...meanings]));
+              }
+              if (strokeCount && !current.strokeCount) {
+                current.strokeCount = strokeCount;
+              }
+              current.importIds = Array.from(new Set([...(current.importIds || []), importId]));
+              current.updatedAt = Date.now();
+              kanjiMap.set(rawChar, current);
+            } else {
+              const newEntry: KanjiEntryItem = {
+                character: rawChar,
+                jlptLevel: lvl,
+                readings: onReadings.length > 0 || kunReadings.length > 0 ? { on: onReadings, kun: kunReadings } : undefined,
+                meanings: meanings.length > 0 ? meanings : undefined,
+                strokeCount,
+                importIds: [importId],
+                updatedAt: Date.now(),
+              };
+              kanjiMap.set(rawChar, newEntry);
+            }
+          }
+        }
+
+        // Calculate per-level counts
+        const kanjiEntriesList = Array.from(kanjiMap.values());
+        for (const k of kanjiEntriesList) {
+          const l = (k.jlptLevel && /^N[1-5]$/.test(k.jlptLevel) ? k.jlptLevel : 'No level') as keyof typeof perLevelCounts;
+          perLevelCounts[l] = (perLevelCounts[l] || 0) + 1;
+        }
+
+        self.postMessage({
+          type: 'status',
+          message: `Saving ${kanjiEntriesList.length.toLocaleString()} kanji entries...`,
+        });
+
+        const BATCH_SIZE = 500;
+        let processed = 0;
+        const total = kanjiEntriesList.length;
+
+        for (let i = 0; i < total; i += BATCH_SIZE) {
+          if (isCancelled) {
+            self.postMessage({ type: 'cancelled' });
+            return;
+          }
+          const chunk = kanjiEntriesList.slice(i, i + BATCH_SIZE);
+          await workerDb.kanjiEntries.bulkPut(chunk);
+          processed += chunk.length;
+          const percent = Math.min(100, Math.round((processed / total) * 100));
+          self.postMessage({ type: 'progress', processed, total, percent });
+        }
+
+        const totalFileBytes = filesToProcess.reduce((acc, f) => acc + (f.sizeBytes || f.text.length), 0);
+        const compositeFileName =
+          filesToProcess.length > 1
+            ? `${filesToProcess.length} kanji files (${filesToProcess[0].fileName}...)`
+            : filesToProcess[0].fileName;
+
+        // Save import record
+        await workerDb.imports.put({
+          importId,
+          languageCode,
+          kind: 'kanji-levels',
+          fileName: compositeFileName,
+          fileSize: totalFileBytes,
+          fingerprint,
+          date: Date.now(),
+          entryCount: total,
+          version: '1.0',
+        });
+
+        self.postMessage({
+          type: 'complete',
+          importId,
+          kind: 'kanji-levels',
+          count: total,
+          perLevelCounts,
+          duplicateCount,
+          skippedCount,
+          fileName: compositeFileName,
+          fileSize: totalFileBytes,
+          languageCode,
+        });
+        return;
       }
 
       // Check if overlay data (JLPT lists, Frequency lists)

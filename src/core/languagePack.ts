@@ -36,7 +36,7 @@ export interface DictionaryEntry {
   priorityBadge?: string;
   isSampleFallback?: boolean;
   allEntries?: DictionaryEntry[];
-  sourceKind?: 'dictionary' | 'names' | 'kanji' | 'sentences' | 'jlpt' | 'frequency' | 'other';
+  sourceKind?: 'dictionary' | 'names' | 'kanji' | 'kanji-levels' | 'sentences' | 'jlpt' | 'frequency' | 'other';
   sourceName?: string;
   importIds?: string[];
   groupedResults?: {

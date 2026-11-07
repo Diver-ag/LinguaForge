@@ -4,6 +4,7 @@ import { db, type WordStatusType } from '../../db/db';
 import { useAppStore } from '../../store/useAppStore';
 import { JAPANESE_DICTIONARY_SAMPLE } from '../../packs/japanese/dictionaryData';
 import { deriveFrequencyInfo } from '../../packs/japanese/jmdictFrequency';
+import { getKanjiStatsForText } from '../../packs/japanese/kanjiLookup';
 import {
   X,
   PieChart,
@@ -41,10 +42,36 @@ export const TextStatsModal: React.FC<TextStatsModalProps> = ({
   onSelectWord,
 }) => {
   const { wordStatuses, setWordStatus } = useAppStore();
-  const [activeTab, setActiveTab] = useState<'overview' | 'jlpt' | 'frequency'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'jlpt' | 'frequency' | 'kanji'>('overview');
   const [selectedLevelFilter, setSelectedLevelFilter] = useState<string>('all');
   const [wordMetaMap, setWordMetaMap] = useState<Record<string, WordMeta>>({});
   const [isLoadingMeta, setIsLoadingMeta] = useState(true);
+  const [kanjiStats, setKanjiStats] = useState<{
+    totalUnique: number;
+    counts: Record<'N5' | 'N4' | 'N3' | 'N2' | 'N1' | 'unlisted', number>;
+    kanjiByLevel: Record<'N5' | 'N4' | 'N3' | 'N2' | 'N1' | 'unlisted', string[]>;
+    unlisted: string[];
+  }>({
+    totalUnique: 0,
+    counts: { N5: 0, N4: 0, N3: 0, N2: 0, N1: 0, unlisted: 0 },
+    kanjiByLevel: { N5: [], N4: [], N3: [], N2: [], N1: [], unlisted: [] },
+    unlisted: [],
+  });
+
+  useEffect(() => {
+    let isCancelled = false;
+    async function loadKanji() {
+      const fullText = tokens.map((t) => t.surface).join('');
+      const res = await getKanjiStatsForText(fullText);
+      if (!isCancelled) {
+        setKanjiStats(res);
+      }
+    }
+    loadKanji();
+    return () => {
+      isCancelled = true;
+    };
+  }, [tokens]);
 
   // Extract unique word keys
   const uniqueWords = useMemo(() => {
@@ -352,6 +379,17 @@ export const TextStatsModal: React.FC<TextStatsModalProps> = ({
             <BarChart3 className="w-3.5 h-3.5 text-teal-500" />
             Frequency Bands
           </button>
+          <button
+            onClick={() => setActiveTab('kanji')}
+            className={`pb-2.5 px-3 text-xs font-bold border-b-2 transition flex items-center gap-1.5 ${
+              activeTab === 'kanji'
+                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
+                : 'border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5 text-purple-500" />
+            Kanji by Level ({kanjiStats.totalUnique})
+          </button>
         </div>
 
         {/* Content Body */}
@@ -629,6 +667,115 @@ export const TextStatsModal: React.FC<TextStatsModalProps> = ({
                     </div>
                   );
                 })}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 4: KANJI BY LEVEL BREAKDOWN */}
+          {activeTab === 'kanji' && (
+            <div className="space-y-5">
+              <div>
+                <h4 className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
+                  <span>Unique Kanji by JLPT Level</span>
+                  <span className="text-xs px-2.5 py-0.5 rounded-full bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 font-mono font-bold border border-purple-200 dark:border-purple-800">
+                    {kanjiStats.totalUnique} unique characters
+                  </span>
+                </h4>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  Extracted from this text and categorized using your imported kanji datasets. Unlisted kanji are separated so you can identify gaps in your kanji knowledge.
+                </p>
+              </div>
+
+              {/* Levels bars N5 to N1 */}
+              <div className="space-y-3">
+                {(['N5', 'N4', 'N3', 'N2', 'N1'] as const).map((lvl) => {
+                  const chars = kanjiStats.kanjiByLevel[lvl] || [];
+                  const count = chars.length;
+                  const pct = kanjiStats.totalUnique > 0 ? Math.round((count / kanjiStats.totalUnique) * 100) : 0;
+                  const conf = jlptColors[lvl];
+
+                  return (
+                    <div
+                      key={lvl}
+                      className="p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/40 space-y-2"
+                    >
+                      <div className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className={`font-black px-2 py-0.5 rounded-lg text-[11px] ${conf.bg} ${conf.text}`}>
+                            {lvl}
+                          </span>
+                          <span className="font-semibold text-slate-700 dark:text-slate-300">
+                            {lvl === 'N5'
+                              ? 'Beginner'
+                              : lvl === 'N4'
+                              ? 'Elementary'
+                              : lvl === 'N3'
+                              ? 'Intermediate'
+                              : lvl === 'N2'
+                              ? 'Pre-Advanced'
+                              : 'Advanced'}
+                          </span>
+                        </div>
+                        <div className="font-mono text-slate-600 dark:text-slate-400">
+                          <strong>{count}</strong> kanji ({pct}%)
+                        </div>
+                      </div>
+
+                      <div className="h-2 w-full bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                        <div style={{ width: `${pct}%` }} className={`h-full ${conf.bar} transition-all duration-300`} />
+                      </div>
+
+                      {chars.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 pt-1">
+                          {chars.map((ch) => (
+                            <span
+                              key={ch}
+                              className="w-7 h-7 flex items-center justify-center rounded-lg bg-white dark:bg-slate-700 text-xs font-bold text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-600 shadow-2xs hover:scale-110 transition cursor-default"
+                              title={`${ch} (${lvl})`}
+                            >
+                              {ch}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Unlisted Kanji Section (counted and listed separately) */}
+              <div className="p-4 rounded-2xl border border-dashed border-amber-300 dark:border-amber-800 bg-amber-50/40 dark:bg-amber-950/20 space-y-2.5">
+                <div className="flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold px-2 py-0.5 rounded-lg text-[11px] bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
+                      Unlisted Kanji
+                    </span>
+                    <span className="text-slate-600 dark:text-slate-400 font-medium">
+                      (No level assigned in installed kanji data)
+                    </span>
+                  </div>
+                  <div className="font-mono text-amber-700 dark:text-amber-400 font-bold">
+                    {kanjiStats.counts.unlisted} kanji
+                  </div>
+                </div>
+
+                {kanjiStats.unlisted.length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {kanjiStats.unlisted.map((ch) => (
+                      <span
+                        key={ch}
+                        className="w-7 h-7 flex items-center justify-center rounded-lg bg-white dark:bg-slate-800 text-xs font-bold text-amber-900 dark:text-amber-300 border border-amber-200 dark:border-amber-800/60 shadow-2xs"
+                        title={`${ch} (Unlisted / No Level)`}
+                      >
+                        {ch}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-emerald-600 dark:text-emerald-400 font-medium pt-1">
+                    ✓ All kanji in this text have recognized JLPT levels!
+                  </p>
+                )}
               </div>
             </div>
           )}

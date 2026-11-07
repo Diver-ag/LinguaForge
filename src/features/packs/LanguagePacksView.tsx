@@ -108,6 +108,9 @@ export const LanguagePacksView: React.FC = () => {
     ambiguousCount?: number;
     unmatchedSample?: any[];
     ambiguousSample?: any[];
+    perLevelCounts?: Record<string, number>;
+    duplicateCount?: number;
+    skippedCount?: number;
   } | null>(null);
 
   // Duplicate prompt modal state (Requirement 2)
@@ -477,7 +480,7 @@ export const LanguagePacksView: React.FC = () => {
         setShowImportModal(false);
         setImportStatusMessage('');
 
-        // Display summary modal with matched, unmatched, ambiguous counts
+        // Display summary modal with matched/unmatched (for vocab/frequency) or per-level/duplicate/skipped (for kanji-levels)
         setImportSummary({
           isOpen: true,
           kind: data.kind,
@@ -488,6 +491,9 @@ export const LanguagePacksView: React.FC = () => {
           ambiguousCount: data.ambiguousCount,
           unmatchedSample: data.unmatchedSample || [],
           ambiguousSample: data.ambiguousSample || [],
+          perLevelCounts: data.perLevelCounts,
+          duplicateCount: data.duplicateCount,
+          skippedCount: data.skippedCount,
         });
       } else if (data.type === 'error') {
         setIsImporting(false);
@@ -523,16 +529,38 @@ export const LanguagePacksView: React.FC = () => {
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
 
     setImportError(null);
-    const buffer = await file.arrayBuffer();
-    startImportWorker({
-      source: 'file',
-      fileData: buffer,
-      fileName: file.name,
-    });
+
+    if (selectedKind === 'kanji-levels' && fileList.length > 1) {
+      const filesArray: Array<{ fileName: string; text: string; size: number }> = [];
+      for (let i = 0; i < fileList.length; i++) {
+        const f = fileList[i];
+        const text = await f.text();
+        filesArray.push({
+          fileName: f.name,
+          text,
+          size: f.size,
+        });
+      }
+      startImportWorker({
+        source: 'files',
+        files: filesArray,
+        fileName: `${filesArray.length} kanji files`,
+        explicitKind: 'kanji-levels',
+      });
+    } else {
+      const file = fileList[0];
+      const buffer = await file.arrayBuffer();
+      startImportWorker({
+        source: 'file',
+        fileData: buffer,
+        fileName: file.name,
+        explicitKind: selectedKind,
+      });
+    }
   };
 
   const handleUrlImport = () => {
@@ -823,16 +851,30 @@ export const LanguagePacksView: React.FC = () => {
                     </span>
                   </div>
 
-                  <button
-                    onClick={() => {
-                      setSelectedKind('dictionary');
-                      setShowImportModal(true);
-                    }}
-                    className="text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1 self-start sm:self-auto"
-                  >
-                    <Upload className="w-3.5 h-3.5" />
-                    Import new file
-                  </button>
+                  <div className="flex items-center gap-3 self-start sm:self-auto flex-wrap">
+                    {isJapanese && (
+                      <button
+                        onClick={() => {
+                          setSelectedKind('kanji-levels');
+                          setShowImportModal(true);
+                        }}
+                        className="text-xs font-bold text-amber-600 dark:text-amber-400 hover:underline flex items-center gap-1"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                        Import kanji list
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        setSelectedKind('dictionary');
+                        setShowImportModal(true);
+                      }}
+                      className="text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      Import new file
+                    </button>
+                  </div>
                 </div>
 
                 {packImports.length === 0 ? (
@@ -1221,6 +1263,30 @@ export const LanguagePacksView: React.FC = () => {
             </div>
           </div>
         </section>
+
+        {/* Credits & Dataset Licenses */}
+        <section className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 space-y-3">
+          <div className="flex items-center gap-2">
+            <Info className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+              Data Sources, Attribution & Licenses
+            </h3>
+          </div>
+          <div className="text-xs text-slate-500 dark:text-slate-400 space-y-2 leading-relaxed">
+            <p>
+              • <strong>Kanji JLPT Datasets & Lists</strong>: Community-curated JLPT distributions (N5 beginner to N1 advanced). Note that the Japan Foundation and Japan Educational Exchanges and Services do not publish official fixed kanji lists.
+            </p>
+            <p>
+              • <strong>KANJIDIC2 & JMdict</strong>: Property of the Electronic Dictionary Research and Development Group (EDRDG), used in conformance with the Group's licence (Creative Commons Attribution-ShareAlike 3.0 Unported — CC BY-SA 3.0).
+            </p>
+            <p>
+              • <strong>JMnedict</strong>: Japanese Names Dictionary, maintained by EDRDG.
+            </p>
+            <p>
+              • <strong>Tatoeba</strong>: Example sentences licensed under CC BY 2.0 FR by community contributors.
+            </p>
+          </div>
+        </section>
       </main>
 
       {/* Duplicate Fingerprint / Replace Confirmation Modal (Requirement 2) */}
@@ -1408,7 +1474,7 @@ export const LanguagePacksView: React.FC = () => {
                   Pack Kind:
                 </label>
                 <div className="flex flex-wrap gap-1.5 text-xs font-semibold">
-                  {(['dictionary', 'names', 'kanji', 'sentences', 'jlpt', 'frequency'] as ImportKind[]).map(
+                  {(['dictionary', 'names', 'kanji-levels', 'sentences', 'jlpt', 'frequency'] as ImportKind[]).map(
                     (k) => (
                       <button
                         key={k}
@@ -1419,7 +1485,7 @@ export const LanguagePacksView: React.FC = () => {
                             : 'bg-[var(--surface-muted)] text-[var(--text-secondary)] hover:bg-[var(--border)]'
                         }`}
                       >
-                        {k.toUpperCase()}
+                        {k === 'kanji-levels' ? 'KANJI LEVELS' : k.toUpperCase()}
                       </button>
                     )
                   )}
@@ -1470,19 +1536,43 @@ export const LanguagePacksView: React.FC = () => {
                   <Upload className="w-10 h-10 text-indigo-500 mx-auto" />
                   <div>
                     <p className="text-sm font-bold text-slate-900 dark:text-white">
-                      Select {selectedKind.toUpperCase()} file
+                      Select {selectedKind === 'kanji-levels' ? 'Kanji CSV file(s)' : `${selectedKind.toUpperCase()} file`}
                     </p>
                     <p className="text-xs text-slate-500 mt-1">
                       Supports <code className="font-mono">.csv</code>, <code className="font-mono">.tsv</code>, <code className="font-mono">.json</code>, <code className="font-mono">.json.gz</code>, or <code className="font-mono">.zip</code>
+                      {selectedKind === 'kanji-levels' && ' (select one or multiple CSVs)'}
                     </p>
                   </div>
 
                   {/* CSV Documentation & Disclaimers based on selectedKind */}
+                  {selectedKind === 'kanji-levels' && (
+                    <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-left text-xs space-y-1.5 max-w-md mx-auto">
+                      <div className="font-bold text-amber-900 dark:text-amber-300 flex items-center gap-1.5">
+                        <Sparkles className="w-4 h-4 text-amber-500" />
+                        <span>Kanji JLPT List CSV Specification</span>
+                      </div>
+                      <p className="text-slate-600 dark:text-slate-400">
+                        Columns: <code className="font-mono font-semibold">character, level (optional), readings, meanings, strokes</code>
+                      </p>
+                      <div className="p-2 rounded bg-white/80 dark:bg-slate-900/80 font-mono text-[11px] text-slate-700 dark:text-slate-300 border border-amber-100 dark:border-amber-900">
+                        character,level,reading,meaning,strokes<br />
+                        学,N5,ガク・まなぶ,study; learning,8<br />
+                        校,N5,コウ,school,10<br />
+                        違,N3,イ・ちがう,differ; wrong,13
+                      </div>
+                      <div className="text-[11px] text-amber-800 dark:text-amber-300 space-y-0.5 pt-0.5">
+                        <div>• <strong>Level inference</strong>: If file has no level column, level is inferred automatically from file name (e.g. <code className="font-mono">n5_kanji.csv</code> → N5).</div>
+                        <div>• <strong>Duplicates</strong>: If a kanji appears in several files, the easier level (N5 &gt; N4 &gt; N3 &gt; N2 &gt; N1) is kept.</div>
+                        <div>• <strong>Multi-file</strong>: You can select multiple CSV files at once.</div>
+                      </div>
+                    </div>
+                  )}
+
                   {selectedKind === 'jlpt' && (
                     <div className="p-3 rounded-xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800 text-left text-xs space-y-1.5 max-w-md mx-auto">
                       <div className="font-bold text-sky-900 dark:text-sky-300 flex items-center gap-1.5">
                         <Award className="w-4 h-4 text-sky-500" />
-                        <span>JLPT CSV Format Specification</span>
+                        <span>JLPT Vocabulary CSV Format Specification</span>
                       </div>
                       <p className="text-slate-600 dark:text-slate-400">
                         Columns: <code className="font-mono font-semibold">expression, reading (optional), level (N5-N1)</code>
@@ -1525,10 +1615,11 @@ export const LanguagePacksView: React.FC = () => {
                   </p>
 
                   <label className="inline-block px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl cursor-pointer transition shadow-sm">
-                    Browse Local File
+                    {selectedKind === 'kanji-levels' ? 'Browse Kanji CSV(s)' : 'Browse Local File'}
                     <input
                       type="file"
                       accept=".csv,.tsv,.json,.gz,.zip,.txt"
+                      multiple={selectedKind === 'kanji-levels'}
                       onChange={handleFileUpload}
                       className="hidden"
                     />
@@ -1671,6 +1762,46 @@ export const LanguagePacksView: React.FC = () => {
                       CSV ranking (word, rank). Maps to frequency bands (Top 500, Top 1,000, etc.).
                     </p>
                   </button>
+
+                  {/* Sample 6: Kanji JLPT List (CSV) */}
+                  <button
+                    onClick={() =>
+                      handleSampleImport(
+                        '/dict/kanji-jlpt-sample.csv',
+                        'kanji-jlpt-sample.csv',
+                        'kanji-levels'
+                      )
+                    }
+                    className="p-3 rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/30 dark:bg-amber-950/20 text-left hover:border-amber-500 transition space-y-1"
+                  >
+                    <div className="flex items-center gap-1.5 font-bold text-amber-800 dark:text-amber-300">
+                      <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                      <span>JLPT Kanji List Sample (CSV)</span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Individual kanji (学 N5, 校 N5, 食 N5, 違 N3, 鑑 N1) with readings, meanings, strokes.
+                    </p>
+                  </button>
+
+                  {/* Sample 7: N5 Kanji (Filename-inferred Level) */}
+                  <button
+                    onClick={() =>
+                      handleSampleImport(
+                        '/dict/n5_kanji.csv',
+                        'n5_kanji.csv',
+                        'kanji-levels'
+                      )
+                    }
+                    className="p-3 rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/30 dark:bg-amber-950/20 text-left hover:border-amber-500 transition space-y-1"
+                  >
+                    <div className="flex items-center gap-1.5 font-bold text-amber-800 dark:text-amber-300">
+                      <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                      <span>N5 Kanji (Filename-Inferred Level)</span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Demonstrates level inference from filename <code className="font-mono">n5_kanji.csv</code> without explicit level column.
+                    </p>
+                  </button>
                 </div>
               </div>
             )}
@@ -1777,66 +1908,129 @@ export const LanguagePacksView: React.FC = () => {
                 </div>
               </div>
 
-              {/* Matched / Ambiguous / Unmatched Grid */}
-              {(importSummary.matchedCount !== undefined ||
-                importSummary.unmatchedCount !== undefined ||
-                importSummary.ambiguousCount !== undefined) && (
-                <div className="grid grid-cols-3 gap-2 pt-1 text-center">
-                  <div className="p-3 rounded-2xl bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800">
-                    <span className="text-[10px] uppercase font-bold text-emerald-600 dark:text-emerald-400 block">
-                      Matched
+              {/* For kanji-levels: show only characters imported, per-level counts, duplicates, skipped rows */}
+              {importSummary.kind === 'kanji-levels' ? (
+                <div className="space-y-3 pt-1">
+                  {/* Per-level counts grid */}
+                  <div className="space-y-1.5">
+                    <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 block">
+                      Per-Level Kanji Breakdown:
                     </span>
-                    <span className="text-base font-bold font-mono text-emerald-700 dark:text-emerald-300">
-                      {(importSummary.matchedCount || 0).toLocaleString()}
-                    </span>
+                    <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5 text-center">
+                      {(['N5', 'N4', 'N3', 'N2', 'N1', 'No level'] as const).map((lvl) => {
+                        const cnt = importSummary.perLevelCounts?.[lvl] || 0;
+                        const colors: Record<string, string> = {
+                          N5: 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
+                          N4: 'bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800',
+                          N3: 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800',
+                          N2: 'bg-orange-50 dark:bg-orange-950/40 text-orange-700 dark:text-orange-300 border-orange-200 dark:border-orange-800',
+                          N1: 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
+                          'No level': 'bg-slate-50 dark:bg-slate-800/60 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700',
+                        };
+                        return (
+                          <div
+                            key={lvl}
+                            className={`p-2 rounded-xl border ${colors[lvl]} flex flex-col items-center justify-center`}
+                          >
+                            <span className="text-[10px] font-bold block">{lvl}</span>
+                            <span className="text-sm font-mono font-bold">{cnt.toLocaleString()}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                  <div className="p-3 rounded-2xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800">
-                    <span className="text-[10px] uppercase font-bold text-amber-600 dark:text-amber-400 block">
-                      Ambiguous
-                    </span>
-                    <span className="text-base font-bold font-mono text-amber-700 dark:text-amber-300">
-                      {(importSummary.ambiguousCount || 0).toLocaleString()}
-                    </span>
-                  </div>
-                  <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
-                    <span className="text-[10px] uppercase font-bold text-slate-500 block">
-                      Unmatched
-                    </span>
-                    <span className="text-base font-bold font-mono text-slate-700 dark:text-slate-300">
-                      {(importSummary.unmatchedCount || 0).toLocaleString()}
-                    </span>
+
+                  {/* Duplicates & Skipped info */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="p-3 rounded-2xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800">
+                      <span className="text-[10px] uppercase font-bold text-amber-700 dark:text-amber-400 block">
+                        Duplicates
+                      </span>
+                      <span className="text-base font-bold font-mono text-amber-800 dark:text-amber-300">
+                        {(importSummary.duplicateCount || 0).toLocaleString()}
+                      </span>
+                      <span className="text-[10px] text-amber-600 dark:text-amber-400 block mt-0.5">
+                        Easier level retained
+                      </span>
+                    </div>
+
+                    <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
+                      <span className="text-[10px] uppercase font-bold text-slate-500 block">
+                        Skipped Rows
+                      </span>
+                      <span className="text-base font-bold font-mono text-slate-700 dark:text-slate-300">
+                        {(importSummary.skippedCount || 0).toLocaleString()}
+                      </span>
+                      <span className="text-[10px] text-slate-400 block mt-0.5">
+                        Not a single kanji character
+                      </span>
+                    </div>
                   </div>
                 </div>
-              )}
+              ) : (
+                <>
+                  {/* Matched / Ambiguous / Unmatched Grid */}
+                  {(importSummary.matchedCount !== undefined ||
+                    importSummary.unmatchedCount !== undefined ||
+                    importSummary.ambiguousCount !== undefined) && (
+                    <div className="grid grid-cols-3 gap-2 pt-1 text-center">
+                      <div className="p-3 rounded-2xl bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800">
+                        <span className="text-[10px] uppercase font-bold text-emerald-600 dark:text-emerald-400 block">
+                          Matched
+                        </span>
+                        <span className="text-base font-bold font-mono text-emerald-700 dark:text-emerald-300">
+                          {(importSummary.matchedCount || 0).toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="p-3 rounded-2xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800">
+                        <span className="text-[10px] uppercase font-bold text-amber-600 dark:text-amber-400 block">
+                          Ambiguous
+                        </span>
+                        <span className="text-base font-bold font-mono text-amber-700 dark:text-amber-300">
+                          {(importSummary.ambiguousCount || 0).toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
+                        <span className="text-[10px] uppercase font-bold text-slate-500 block">
+                          Unmatched
+                        </span>
+                        <span className="text-base font-bold font-mono text-slate-700 dark:text-slate-300">
+                          {(importSummary.unmatchedCount || 0).toLocaleString()}
+                        </span>
+                      </div>
+                    </div>
+                  )}
 
-              {/* Unmatched sample list if any */}
-              {importSummary.unmatchedSample && importSummary.unmatchedSample.length > 0 && (
-                <div className="space-y-1">
-                  <span className="text-[11px] font-bold text-slate-500 block">
-                    Unmatched Sample (not found in current dictionary):
-                  </span>
-                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 max-h-24 overflow-y-auto font-mono text-[11px] text-slate-600 dark:text-slate-300 flex flex-wrap gap-1.5">
-                    {importSummary.unmatchedSample.slice(0, 15).map((u: any, idx: number) => (
-                      <span
-                        key={idx}
-                        className="px-1.5 py-0.5 rounded bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600"
-                      >
-                        {u.expression || u.word || String(u)}
+                  {/* Unmatched sample list if any */}
+                  {importSummary.unmatchedSample && importSummary.unmatchedSample.length > 0 && (
+                    <div className="space-y-1">
+                      <span className="text-[11px] font-bold text-slate-500 block">
+                        Unmatched Sample (not found in current dictionary):
                       </span>
-                    ))}
-                    {importSummary.unmatchedSample.length > 15 && (
-                      <span className="text-slate-400 self-center">
-                        +{importSummary.unmatchedSample.length - 15} more
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
+                      <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 max-h-24 overflow-y-auto font-mono text-[11px] text-slate-600 dark:text-slate-300 flex flex-wrap gap-1.5">
+                        {importSummary.unmatchedSample.slice(0, 15).map((u: any, idx: number) => (
+                          <span
+                            key={idx}
+                            className="px-1.5 py-0.5 rounded bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600"
+                          >
+                            {u.expression || u.word || String(u)}
+                          </span>
+                        ))}
+                        {importSummary.unmatchedSample.length > 15 && (
+                          <span className="text-slate-400 self-center">
+                            +{importSummary.unmatchedSample.length - 15} more
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
-              {importSummary.kind === 'jlpt' && (
-                <p className="text-[11px] text-slate-400 italic">
-                  Notice: JLPT vocabulary lists are unofficial community lists. Official JLPT specifications do not publish fixed vocabulary lists.
-                </p>
+                  {importSummary.kind === 'jlpt' && (
+                    <p className="text-[11px] text-slate-400 italic">
+                      Notice: JLPT vocabulary lists are unofficial community lists. Official JLPT specifications do not publish fixed vocabulary lists.
+                    </p>
+                  )}
+                </>
               )}
             </div>
 

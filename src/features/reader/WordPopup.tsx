@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import type { DictionaryEntry, LanguagePack, Token } from '../../core/languagePack';
+import type { DictionaryEntry, LanguagePack, Token, KanjiDetail } from '../../core/languagePack';
 import { db, type WordStatusType } from '../../db/db';
 import { useAppStore } from '../../store/useAppStore';
 import {
@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { FuriganaText } from '../../ui/FuriganaText';
 import { deriveFrequencyInfo } from '../../packs/japanese/jmdictFrequency';
+import { getKanjiDetailsForWord, getHardestKanjiLevel } from '../../packs/japanese/kanjiLookup';
 
 interface WordPopupProps {
   token: Token;
@@ -47,6 +48,8 @@ export const WordPopup: React.FC<WordPopupProps> = ({
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [selectedEntryIndex, setSelectedEntryIndex] = useState(0);
   const [sourceFilter, setSourceFilter] = useState<'all' | 'words' | 'names' | 'kanji' | 'examples'>('all');
+  const [kanjiDetails, setKanjiDetails] = useState<KanjiDetail[]>([]);
+  const [selectedKanjiChar, setSelectedKanjiChar] = useState<string | null>(null);
 
   const grouped = entry?.groupedResults;
   const hasMultipleSources = useMemo(() => {
@@ -82,6 +85,25 @@ export const WordPopup: React.FC<WordPopupProps> = ({
   const lemma = activeEntryData?.word || entry?.word || token.baseForm || token.surface;
   const currentStatus = wordStatuses[lemma] || wordStatuses[token.surface] || 'new';
 
+  // Load dedicated kanji details from kanjiEntries table (independent from KANJIDIC)
+  useEffect(() => {
+    let isCancelled = false;
+    async function loadKanji() {
+      const searchTarget = `${lemma}${token.surface}`;
+      const details = await getKanjiDetailsForWord(searchTarget);
+      if (!isCancelled) {
+        setKanjiDetails(details);
+        if (details.length > 0) {
+          setSelectedKanjiChar((prev) => prev || details[0].character);
+        }
+      }
+    }
+    loadKanji();
+    return () => {
+      isCancelled = true;
+    };
+  }, [lemma, token.surface]);
+
   const rawReadings = activeEntryData?.readings || entry?.readings || (token.reading ? [token.reading] : []);
   // Filter out any readings that simply echo the kanji surface text without kana pronunciation
   const validReadings = rawReadings.filter(
@@ -108,6 +130,11 @@ export const WordPopup: React.FC<WordPopupProps> = ({
   const kanjiList = entry?.kanjiBreakdown || [];
   const examples = entry?.examples || [];
   const isSampleFallback = activeEntryData?.isSampleFallback ?? entry?.isSampleFallback ?? true;
+
+  const hasWordJlptLevel = Boolean(level && /^N[1-5]$/i.test(level));
+  const hardestKanjiLevel = useMemo(() => {
+    return getHardestKanjiLevel(kanjiDetails);
+  }, [kanjiDetails]);
 
   const components = token.components || entry?.grammarComponents || [];
   const hasGrammarBreakdown = components.length > 1;
@@ -287,6 +314,53 @@ export const WordPopup: React.FC<WordPopupProps> = ({
               </div>
             )}
 
+            {/* Hardest kanji estimate line: shown ONLY when word itself has no vocabulary level */}
+            {!hasWordJlptLevel && hardestKanjiLevel && (
+              <div className="text-[11px] text-slate-500 dark:text-slate-400 italic pt-1 flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                <span>Hardest kanji: <strong className="text-slate-700 dark:text-slate-300">{hardestKanjiLevel}</strong> (estimate)</span>
+              </div>
+            )}
+
+            {/* Kanji levels row under word header: 1 chip per kanji */}
+            {kanjiDetails.length > 0 && (
+              <div className="flex items-center gap-1.5 pt-1.5 flex-wrap">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                  Kanji levels:
+                </span>
+                {kanjiDetails.map((k) => {
+                  const kLvl = k.jlptLevel || 'No level';
+                  const lvlColor =
+                    kLvl === 'N5'
+                      ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                      : kLvl === 'N4'
+                      ? 'bg-sky-50 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300 border-sky-200 dark:border-sky-800'
+                      : kLvl === 'N3'
+                      ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 border-amber-200 dark:border-amber-800'
+                      : kLvl === 'N2'
+                      ? 'bg-orange-50 text-orange-700 dark:bg-orange-950/60 dark:text-orange-300 border-orange-200 dark:border-orange-800'
+                      : kLvl === 'N1'
+                      ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300 border-rose-200 dark:border-rose-800'
+                      : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 border-slate-200 dark:border-slate-700';
+
+                  return (
+                    <button
+                      key={k.character}
+                      onClick={() => {
+                        setActiveTab('kanji');
+                        setSelectedKanjiChar(k.character);
+                      }}
+                      className={`text-[11px] px-2 py-0.5 rounded-lg font-bold border transition hover:scale-105 active:scale-95 flex items-center gap-1 cursor-pointer ${lvlColor}`}
+                      title={`View details for ${k.character} (${kLvl})`}
+                    >
+                      <span className="font-bold">{k.character}</span>
+                      <span className="text-[10px] opacity-80">{kLvl}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
             {/* Source group filter (Words, Names, Kanji, Examples) when results exist from multiple sources */}
             {hasMultipleSources && grouped && (
               <div className="flex items-center gap-1 pt-1.5 mt-1 border-t border-slate-200/50 dark:border-slate-800/60 flex-wrap">
@@ -443,7 +517,7 @@ export const WordPopup: React.FC<WordPopupProps> = ({
           </button>
         )}
 
-        {kanjiList.length > 0 && (
+        {(kanjiDetails.length > 0 || kanjiList.length > 0) && (
           <button
             onClick={() => setActiveTab('kanji')}
             className={`flex items-center gap-1 py-2 px-3 border-b-2 font-semibold transition ${
@@ -453,7 +527,7 @@ export const WordPopup: React.FC<WordPopupProps> = ({
             }`}
           >
             <Layers className="w-3.5 h-3.5" />
-            Kanji ({kanjiList.length})
+            Kanji ({kanjiDetails.length || kanjiList.length})
           </button>
         )}
 
@@ -555,36 +629,48 @@ export const WordPopup: React.FC<WordPopupProps> = ({
 
         {activeTab === 'kanji' && (
           <div className="space-y-2.5">
-            {kanjiList.map((k, idx) => (
-              <div
-                key={idx}
-                className="p-2.5 bg-slate-50 dark:bg-slate-800/70 rounded-xl border border-slate-200 dark:border-slate-700/60 flex items-start gap-3"
-              >
-                <div className="w-10 h-10 flex items-center justify-center rounded-lg bg-indigo-100 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300 text-xl font-bold shrink-0">
-                  {k.character}
-                </div>
-                <div className="space-y-0.5 min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="font-semibold text-xs text-slate-900 dark:text-slate-100">
-                      {k.meanings.join(', ')}
-                    </span>
-                    {k.jlptLevel && (
-                      <span className="text-[10px] px-1.5 py-0.5 font-bold rounded bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300">
-                        {k.jlptLevel}
+            {(kanjiDetails.length > 0 ? kanjiDetails : kanjiList).map((k, idx) => {
+              const isSelected = selectedKanjiChar === k.character;
+              return (
+                <div
+                  key={idx}
+                  className={`p-2.5 rounded-xl border transition flex items-start gap-3 ${
+                    isSelected
+                      ? 'bg-indigo-50/70 dark:bg-indigo-950/40 border-indigo-400 dark:border-indigo-600 ring-2 ring-indigo-500/30'
+                      : 'bg-slate-50 dark:bg-slate-800/70 border-slate-200 dark:border-slate-700/60'
+                  }`}
+                >
+                  <div className="w-10 h-10 flex items-center justify-center rounded-lg bg-indigo-100 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300 text-xl font-bold shrink-0">
+                    {k.character}
+                  </div>
+                  <div className="space-y-0.5 min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="font-semibold text-xs text-slate-900 dark:text-slate-100">
+                        {k.meanings?.join(', ') || 'Kanji character'}
                       </span>
-                    )}
-                  </div>
-                  <div className="text-[11px] text-slate-500 dark:text-slate-400 flex flex-wrap gap-x-2">
-                    {k.readings.on && k.readings.on.length > 0 && <span>音: {k.readings.on.join(', ')}</span>}
-                    {k.readings.kun && k.readings.kun.length > 0 && <span>訓: {k.readings.kun.join(', ')}</span>}
-                  </div>
-                  <div className="text-[10px] text-slate-400 flex gap-2">
-                    {k.strokeCount && <span>Strokes: {k.strokeCount}</span>}
-                    {k.radicals && k.radicals.length > 0 && <span>Radical: {k.radicals.join(', ')}</span>}
+                      {k.jlptLevel ? (
+                        <span className="text-[10px] px-1.5 py-0.5 font-bold rounded bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300">
+                          {k.jlptLevel}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] px-1.5 py-0.5 font-medium rounded bg-slate-100 dark:bg-slate-800 text-slate-500">
+                          No level
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-slate-500 dark:text-slate-400 flex flex-wrap gap-x-2">
+                      {k.readings?.on && k.readings.on.length > 0 && <span>音: {k.readings.on.join(', ')}</span>}
+                      {k.readings?.kun && k.readings.kun.length > 0 && <span>訓: {k.readings.kun.join(', ')}</span>}
+                    </div>
+                    <div className="text-[10px] text-slate-400 flex gap-2">
+                      {k.strokeCount && <span>Strokes: {k.strokeCount}</span>}
+                      {k.radicals && k.radicals.length > 0 && <span>Radical: {k.radicals.join(', ')}</span>}
+                      {k.frequencyRank && <span>Freq: #{k.frequencyRank}</span>}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 

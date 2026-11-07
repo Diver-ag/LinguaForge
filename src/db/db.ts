@@ -114,7 +114,22 @@ export type ImportKind =
   | 'sentences'
   | 'jlpt'
   | 'frequency'
+  | 'kanji-levels'
   | 'other';
+
+export interface KanjiEntryItem {
+  character: string; // The single kanji character (primary key)
+  jlptLevel: string; // 'N5' | 'N4' | 'N3' | 'N2' | 'N1'
+  readings?: {
+    on?: string[];
+    kun?: string[];
+    all?: string[];
+  };
+  meanings?: string[];
+  strokeCount?: number;
+  importIds: string[];
+  updatedAt: number;
+}
 
 export interface ImportRecord {
   importId: string;
@@ -203,6 +218,7 @@ export class LinguaForgeDatabase extends Dexie {
   dictionaryMeta!: Table<DictionaryMetaItem, string>;
   importedData!: Table<ImportedDataItem, number>;
   imports!: Table<ImportRecord, string>;
+  kanjiEntries!: Table<KanjiEntryItem, string>;
 
   constructor() {
     super('LinguaForgeDB');
@@ -281,6 +297,10 @@ export class LinguaForgeDatabase extends Dexie {
 
     this.version(5).stores({
       jmdictEntries: 'id, languageCode, *forms, *importIds, *kinds, priorityScore, frequencyBand, jlptLevel',
+    });
+
+    this.version(6).stores({
+      kanjiEntries: 'character, jlptLevel, *importIds',
     });
   }
 }
@@ -402,6 +422,55 @@ export async function deleteImportInBatches(
 ): Promise<void> {
   const imp = await db.imports.get(importId);
   if (!imp) return;
+
+  // If this is a kanji-levels import, remove ONLY from kanjiEntries without touching vocabulary jmdictEntries
+  if (imp.kind === 'kanji-levels') {
+    const kanjiWithImport = await db.kanjiEntries
+      .where('importIds')
+      .equals(importId)
+      .toArray();
+
+    const total = kanjiWithImport.length;
+    if (total === 0) {
+      await db.imports.delete(importId);
+      onProgress?.(100, 0, 0);
+      return;
+    }
+
+    const BATCH_SIZE = 500;
+    let processed = 0;
+
+    for (let i = 0; i < total; i += BATCH_SIZE) {
+      const chunk = kanjiWithImport.slice(i, i + BATCH_SIZE);
+      const toDelete: string[] = [];
+      const toUpdate: KanjiEntryItem[] = [];
+
+      for (const k of chunk) {
+        const remainingIds = (k.importIds || []).filter((id) => id !== importId);
+        if (remainingIds.length === 0) {
+          toDelete.push(k.character);
+        } else {
+          k.importIds = remainingIds;
+          toUpdate.push(k);
+        }
+      }
+
+      if (toDelete.length > 0) {
+        await db.kanjiEntries.bulkDelete(toDelete);
+      }
+      if (toUpdate.length > 0) {
+        await db.kanjiEntries.bulkPut(toUpdate);
+      }
+
+      processed += chunk.length;
+      onProgress?.(Math.round((processed / total) * 100), processed, total);
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    await db.imports.delete(importId);
+    onProgress?.(100, total, total);
+    return;
+  }
 
   // Find all entries in jmdictEntries that reference this importId
   const entriesWithImport = await db.jmdictEntries
