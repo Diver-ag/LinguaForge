@@ -5,12 +5,36 @@ import type { KanjiDetail } from '../../core/languagePack';
 export const CJK_KANJI_REGEX = /[\u4e00-\u9faf\u3400-\u4dbf々〆〇]/g;
 
 /**
- * Extracts unique kanji characters from any Japanese text string.
+ * Checks whether user has imported any kanji list into local IndexedDB.
+ */
+export async function hasInstalledKanjiData(): Promise<boolean> {
+  try {
+    const count = await db.kanjiEntries.count();
+    return count > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Gets count of kanji entries stored in local IndexedDB.
+ */
+export async function getKanjiInstalledCount(): Promise<number> {
+  try {
+    return await db.kanjiEntries.count();
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Extracts unique kanji characters from any Japanese text string, normalized with NFC.
  */
 export function extractKanjiCharacters(text: string): string[] {
   if (!text) return [];
-  const matches = text.match(CJK_KANJI_REGEX) || [];
-  return Array.from(new Set(matches));
+  const normalized = text.normalize('NFC');
+  const matches = normalized.match(CJK_KANJI_REGEX) || [];
+  return Array.from(new Set(matches.map((c) => c.normalize('NFC').trim()).filter(Boolean)));
 }
 
 /**

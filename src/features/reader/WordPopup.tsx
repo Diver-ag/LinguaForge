@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import type { DictionaryEntry, LanguagePack, Token, KanjiDetail } from '../../core/languagePack';
 import { db, type WordStatusType } from '../../db/db';
 import { useAppStore } from '../../store/useAppStore';
@@ -15,7 +16,74 @@ import {
 } from 'lucide-react';
 import { FuriganaText } from '../../ui/FuriganaText';
 import { deriveFrequencyInfo } from '../../packs/japanese/jmdictFrequency';
-import { getKanjiDetailsForWord, getHardestKanjiLevel } from '../../packs/japanese/kanjiLookup';
+import { getKanjiDetailsForWord, getHardestKanjiLevel, hasInstalledKanjiData } from '../../packs/japanese/kanjiLookup';
+
+// Maps JMdict / UniDic / MeCab POS abbreviations to user-friendly names
+const POS_EXPANSION_MAP: Record<string, string> = {
+  n: 'Noun',
+  'n-pref': 'Noun (prefix)',
+  'n-suf': 'Noun (suffix)',
+  'n-t': 'Noun (temporal)',
+  'n-adv': 'Adverbial noun',
+  vs: 'Noun / Suru verb',
+  'vs-i': 'Suru verb',
+  'vs-s': 'Suru verb',
+  v1: 'Ichidan verb',
+  'v1-s': 'Ichidan verb',
+  v5k: 'Godan verb (ku)',
+  v5s: 'Godan verb (su)',
+  v5t: 'Godan verb (tsu)',
+  v5n: 'Godan verb (nu)',
+  v5m: 'Godan verb (mu)',
+  v5r: 'Godan verb (ru)',
+  v5g: 'Godan verb (gu)',
+  v5b: 'Godan verb (bu)',
+  v5u: 'Godan verb (u)',
+  v5: 'Godan verb',
+  vk: 'Kuru verb',
+  vz: 'Ichidan verb (zuru)',
+  'adj-i': 'i-Adjective',
+  'adj-na': 'na-Adjective',
+  'adj-no': 'no-Adjective',
+  'adj-pn': 'Pre-noun adjectival',
+  'adj-t': 'taru-Adjective',
+  'adj-f': 'Prenominal word',
+  adv: 'Adverb',
+  'adv-to': 'Adverb (to)',
+  exp: 'Expression',
+  prt: 'Particle',
+  conj: 'Conjunction',
+  int: 'Interjection',
+  num: 'Number',
+  pn: 'Pronoun',
+  pref: 'Prefix',
+  suf: 'Suffix',
+  counter: 'Counter',
+  名詞: 'Noun',
+  動詞: 'Verb',
+  形容詞: 'Adjective',
+  助詞: 'Particle',
+  助動詞: 'Auxiliary verb',
+  副詞: 'Adverb',
+  接続詞: 'Conjunction',
+  感動詞: 'Interjection',
+  連体詞: 'Adnominal',
+  接頭詞: 'Prefix',
+  記号: 'Symbol',
+};
+
+function formatPartOfSpeech(rawPos?: string): string {
+  if (!rawPos) return '';
+  const parts = rawPos.split(/[,/、\s]+/).map((p) => p.trim()).filter(Boolean);
+  if (parts.length === 0) return '';
+  const formatted = parts.map((p) => {
+    const lower = p.toLowerCase();
+    return POS_EXPANSION_MAP[lower] || POS_EXPANSION_MAP[p] || p;
+  });
+  // Filter out stray single ascii characters like lone "n"
+  const clean = Array.from(new Set(formatted)).filter((p) => p.length > 1 || !/^[a-z]$/i.test(p));
+  return clean.join(', ');
+}
 
 interface WordPopupProps {
   token: Token;
@@ -42,6 +110,7 @@ export const WordPopup: React.FC<WordPopupProps> = ({
   onMouseEnter,
   onMouseLeave,
 }) => {
+  const navigate = useNavigate();
   const { wordStatuses, setWordStatus } = useAppStore();
   const [activeTab, setActiveTab] = useState<'meanings' | 'grammar' | 'kanji' | 'examples'>('meanings');
   const [addedToCards, setAddedToCards] = useState(false);
@@ -49,6 +118,7 @@ export const WordPopup: React.FC<WordPopupProps> = ({
   const [selectedEntryIndex, setSelectedEntryIndex] = useState(0);
   const [sourceFilter, setSourceFilter] = useState<'all' | 'words' | 'names' | 'kanji' | 'examples'>('all');
   const [kanjiDetails, setKanjiDetails] = useState<KanjiDetail[]>([]);
+  const [hasInstalledKanji, setHasInstalledKanji] = useState<boolean>(true);
   const [selectedKanjiChar, setSelectedKanjiChar] = useState<string | null>(null);
 
   const grouped = entry?.groupedResults;
@@ -90,9 +160,13 @@ export const WordPopup: React.FC<WordPopupProps> = ({
     let isCancelled = false;
     async function loadKanji() {
       const searchTarget = `${lemma}${token.surface}`;
-      const details = await getKanjiDetailsForWord(searchTarget);
+      const [details, installed] = await Promise.all([
+        getKanjiDetailsForWord(searchTarget),
+        hasInstalledKanjiData(),
+      ]);
       if (!isCancelled) {
         setKanjiDetails(details);
+        setHasInstalledKanji(installed);
         if (details.length > 0) {
           setSelectedKanjiChar((prev) => prev || details[0].character);
         }
@@ -111,11 +185,12 @@ export const WordPopup: React.FC<WordPopupProps> = ({
   );
 
   const meanings = activeEntryData?.meanings || entry?.meanings || [];
-  const pos =
+  const rawPos =
     activeEntryData?.partsOfSpeech?.join(', ') ||
     entry?.partsOfSpeech?.join(', ') ||
     token.partOfSpeech ||
-    'Word';
+    '';
+  const pos = formatPartOfSpeech(rawPos);
   const level = activeEntryData?.level || entry?.level || token.level;
   const frequency = activeEntryData?.frequencyRank || entry?.frequencyRank || token.frequencyRank;
   const priorityTags = activeEntryData?.priorityTags || entry?.priorityTags || [];
@@ -279,8 +354,8 @@ export const WordPopup: React.FC<WordPopupProps> = ({
                 </span>
               )}
 
-              {/* Priority Badge: "Common (news1, nf08)" or "Uncommon" */}
-              {effectivePriorityBadge && (
+              {/* Priority Badge: "Common (news1, nf08)" or "Uncommon" (hide if duplicate of frequency band) */}
+              {effectivePriorityBadge && effectivePriorityBadge !== effectiveFrequencyBand && (
                 <span
                   className={`text-[10px] px-2 py-0.5 rounded-full font-medium border ${
                     effectivePriorityBadge.startsWith('Common')
@@ -328,36 +403,53 @@ export const WordPopup: React.FC<WordPopupProps> = ({
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                   Kanji levels:
                 </span>
-                {kanjiDetails.map((k) => {
-                  const kLvl = k.jlptLevel || 'No level';
-                  const lvlColor =
-                    kLvl === 'N5'
-                      ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
-                      : kLvl === 'N4'
-                      ? 'bg-sky-50 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300 border-sky-200 dark:border-sky-800'
-                      : kLvl === 'N3'
-                      ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 border-amber-200 dark:border-amber-800'
-                      : kLvl === 'N2'
-                      ? 'bg-orange-50 text-orange-700 dark:bg-orange-950/60 dark:text-orange-300 border-orange-200 dark:border-orange-800'
-                      : kLvl === 'N1'
-                      ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300 border-rose-200 dark:border-rose-800'
-                      : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 border-slate-200 dark:border-slate-700';
-
-                  return (
+                {!hasInstalledKanji ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                      No kanji list installed.
+                    </span>
                     <button
-                      key={k.character}
                       onClick={() => {
-                        setActiveTab('kanji');
-                        setSelectedKanjiChar(k.character);
+                        onClose();
+                        navigate('/packs');
                       }}
-                      className={`text-[11px] px-2 py-0.5 rounded-lg font-bold border transition hover:scale-105 active:scale-95 flex items-center gap-1 cursor-pointer ${lvlColor}`}
-                      title={`View details for ${k.character} (${kLvl})`}
+                      className="text-[11px] px-2 py-0.5 rounded-md font-semibold bg-indigo-50 dark:bg-indigo-950/70 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900 border border-indigo-200 dark:border-indigo-800 transition cursor-pointer"
                     >
-                      <span className="font-bold">{k.character}</span>
-                      <span className="text-[10px] opacity-80">{kLvl}</span>
+                      Import one in Packs
                     </button>
-                  );
-                })}
+                  </div>
+                ) : (
+                  kanjiDetails.map((k) => {
+                    const kLvl = k.jlptLevel || 'No level';
+                    const lvlColor =
+                      kLvl === 'N5'
+                        ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                        : kLvl === 'N4'
+                        ? 'bg-sky-50 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300 border-sky-200 dark:border-sky-800'
+                        : kLvl === 'N3'
+                        ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 border-amber-200 dark:border-amber-800'
+                        : kLvl === 'N2'
+                        ? 'bg-orange-50 text-orange-700 dark:bg-orange-950/60 dark:text-orange-300 border-orange-200 dark:border-orange-800'
+                        : kLvl === 'N1'
+                        ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300 border-rose-200 dark:border-rose-800'
+                        : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 border-slate-200 dark:border-slate-700';
+
+                    return (
+                      <button
+                        key={k.character}
+                        onClick={() => {
+                          setActiveTab('kanji');
+                          setSelectedKanjiChar(k.character);
+                        }}
+                        className={`text-[11px] px-2 py-0.5 rounded-lg font-bold border transition hover:scale-105 active:scale-95 flex items-center gap-1 cursor-pointer ${lvlColor}`}
+                        title={`View details for ${k.character} (${kLvl})`}
+                      >
+                        <span className="font-bold">{k.character}</span>
+                        <span className="text-[10px] opacity-80">{kLvl}</span>
+                      </button>
+                    );
+                  })
+                )}
               </div>
             )}
 
@@ -479,14 +571,16 @@ export const WordPopup: React.FC<WordPopupProps> = ({
         </div>
 
         {/* Part of speech & Conjugation info */}
-        <div className="mt-2 text-xs text-slate-500 dark:text-slate-400 font-medium flex items-center gap-2 flex-wrap">
-          <span>{pos}</span>
-          {token.conjugatedForm && (
-            <span className="text-indigo-600 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/50 px-2 py-0.5 rounded text-[11px]">
-              {token.conjugatedForm}
-            </span>
-          )}
-        </div>
+        {(pos || token.conjugatedForm) && (
+          <div className="mt-2 text-xs text-slate-500 dark:text-slate-400 font-medium flex items-center gap-2 flex-wrap">
+            {pos && <span>{pos}</span>}
+            {token.conjugatedForm && (
+              <span className="text-indigo-600 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/50 px-2 py-0.5 rounded text-[11px]">
+                {token.conjugatedForm}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Tabs */}
@@ -629,6 +723,20 @@ export const WordPopup: React.FC<WordPopupProps> = ({
 
         {activeTab === 'kanji' && (
           <div className="space-y-2.5">
+            {!hasInstalledKanji && (
+              <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-200 flex items-center justify-between gap-2">
+                <span>No kanji list installed on this device. Import one in Packs.</span>
+                <button
+                  onClick={() => {
+                    onClose();
+                    navigate('/packs');
+                  }}
+                  className="px-2 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold shrink-0 transition"
+                >
+                  Packs
+                </button>
+              </div>
+            )}
             {(kanjiDetails.length > 0 ? kanjiDetails : kanjiList).map((k, idx) => {
               const isSelected = selectedKanjiChar === k.character;
               return (
@@ -646,7 +754,11 @@ export const WordPopup: React.FC<WordPopupProps> = ({
                   <div className="space-y-0.5 min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-1">
                       <span className="font-semibold text-xs text-slate-900 dark:text-slate-100">
-                        {k.meanings?.join(', ') || 'Kanji character'}
+                        {k.meanings && k.meanings.length > 0 && k.meanings[0] !== 'Kanji character'
+                          ? k.meanings.join(', ')
+                          : hasInstalledKanji
+                          ? k.meanings?.join(', ') || 'Kanji character'
+                          : '(Import kanji list for definitions)'}
                       </span>
                       {k.jlptLevel ? (
                         <span className="text-[10px] px-1.5 py-0.5 font-bold rounded bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300">

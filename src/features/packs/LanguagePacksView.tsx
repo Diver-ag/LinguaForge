@@ -12,6 +12,7 @@ import {
   type DictionaryMetaItem,
   type ImportRecord,
   type ImportKind,
+  type KanjiEntryItem,
 } from '../../db/db';
 import {
   getKuromojiCacheStatus,
@@ -75,6 +76,22 @@ export const LanguagePacksView: React.FC = () => {
 
   // Multi-import records list (Requirement 1 & 7)
   const [importsList, setImportsList] = useState<ImportRecord[]>([]);
+
+  // Kanji data status and inspection test box (Requirement 2)
+  const [storedKanjiCount, setStoredKanjiCount] = useState<number>(0);
+  const [kanjiLevelsBreakdown, setKanjiLevelsBreakdown] = useState<
+    Record<'N5' | 'N4' | 'N3' | 'N2' | 'N1' | 'unlisted', number>
+  >({
+    N5: 0,
+    N4: 0,
+    N3: 0,
+    N2: 0,
+    N1: 0,
+    unlisted: 0,
+  });
+  const [kanjiSearchChar, setKanjiSearchChar] = useState('');
+  const [kanjiSearchResult, setKanjiSearchResult] = useState<KanjiEntryItem | null | undefined>(undefined);
+  const [isSearchingKanji, setIsSearchingKanji] = useState(false);
 
   // Storage info
   const [storageEstimate, setStorageEstimate] = useState<{ usage: number; quota: number } | null>(null);
@@ -183,6 +200,24 @@ export const LanguagePacksView: React.FC = () => {
       const allImports = await getImports();
       setImportsList(allImports);
 
+      // 4b. Stored Kanji counts & breakdown (Requirement 2)
+      try {
+        const kanjiEntries = await db.kanjiEntries.toArray();
+        setStoredKanjiCount(kanjiEntries.length);
+        const kBreakdown = { N5: 0, N4: 0, N3: 0, N2: 0, N1: 0, unlisted: 0 };
+        for (const k of kanjiEntries) {
+          if (k.jlptLevel && /^N[1-5]$/i.test(k.jlptLevel)) {
+            const lvl = k.jlptLevel.toUpperCase() as keyof typeof kBreakdown;
+            kBreakdown[lvl] = (kBreakdown[lvl] || 0) + 1;
+          } else {
+            kBreakdown.unlisted++;
+          }
+        }
+        setKanjiLevelsBreakdown(kBreakdown);
+      } catch (e) {
+        console.warn('Failed to load kanji entries count:', e);
+      }
+
       // 5. navigator.storage.estimate
       if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.estimate) {
         try {
@@ -214,6 +249,36 @@ export const LanguagePacksView: React.FC = () => {
   useEffect(() => {
     loadAllStatuses();
   }, [loadAllStatuses]);
+
+  // Live inspection query for "Look up a kanji" test box (Requirement 2)
+  useEffect(() => {
+    const raw = kanjiSearchChar.normalize('NFC').trim();
+    if (!raw) {
+      setKanjiSearchResult(undefined);
+      return;
+    }
+    const char = Array.from(raw)[0];
+    let cancelled = false;
+    setIsSearchingKanji(true);
+    db.kanjiEntries
+      .get(char)
+      .then((entry) => {
+        if (!cancelled) {
+          setKanjiSearchResult(entry || null);
+          setIsSearchingKanji(false);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.warn('Kanji lookup test box error:', err);
+          setKanjiSearchResult(null);
+          setIsSearchingKanji(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [kanjiSearchChar, storedKanjiCount]);
 
   // Handle Kuromoji and generic asset downloads
   const handleDownloadAsset = async (packId: string, asset: any) => {
@@ -832,6 +897,168 @@ export const LanguagePacksView: React.FC = () => {
                       <Lock className="w-3.5 h-3.5 text-slate-400" />
                       <span>Permanent built-in fallback</span>
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Kanji Data Status Row & Live Inspection Box (Requirement 2) */}
+              {isJapanese && (
+                <div className="p-6 border-b border-slate-100 dark:border-slate-800 bg-amber-50/20 dark:bg-amber-950/10 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Sparkles className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+                        <h3 className="font-bold text-base text-slate-900 dark:text-white">
+                          Kanji Data Status
+                        </h3>
+                        <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border border-amber-300 dark:border-amber-800">
+                          {storedKanjiCount.toLocaleString()} kanji stored on device
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 max-w-xl">
+                        Characters stored with JLPT levels, stroke counts, on/kun readings, and meanings from imported kanji lists.
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          setSelectedKind('kanji-levels');
+                          setShowImportModal(true);
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold shadow-sm transition active:scale-95"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        Import Kanji List
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Level breakdown pills */}
+                  <div className="flex items-center gap-2 flex-wrap text-xs">
+                    <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                      Levels on device:
+                    </span>
+                    {(['N5', 'N4', 'N3', 'N2', 'N1'] as const).map((lvl) => (
+                      <span
+                        key={lvl}
+                        className="text-[11px] px-2.5 py-1 rounded-lg font-bold border bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 shadow-xs flex items-center gap-1.5"
+                      >
+                        <span className="font-mono text-amber-600 dark:text-amber-400">{lvl}:</span>
+                        <span>{kanjiLevelsBreakdown[lvl].toLocaleString()}</span>
+                      </span>
+                    ))}
+                    {kanjiLevelsBreakdown.unlisted > 0 && (
+                      <span className="text-[11px] px-2.5 py-1 rounded-lg font-medium bg-slate-100 dark:bg-slate-800 text-slate-500 border border-slate-200 dark:border-slate-700">
+                        Unlisted: {kanjiLevelsBreakdown.unlisted.toLocaleString()}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* "Look up a kanji" test box */}
+                  <div className="p-4 rounded-2xl border border-amber-200/80 dark:border-amber-900/50 bg-white dark:bg-slate-900 space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div>
+                        <h4 className="font-bold text-xs sm:text-sm text-slate-900 dark:text-white flex items-center gap-1.5">
+                          <span>Look up a kanji</span>
+                          <span className="text-[10px] font-normal text-slate-400">(Device inspection test box)</span>
+                        </h4>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                          Type one character (e.g. 店, 員, 学, 食) to verify exactly what is stored in this device's IndexedDB.
+                        </p>
+                      </div>
+                      <div className="relative w-full sm:w-48">
+                        <input
+                          type="text"
+                          maxLength={4}
+                          value={kanjiSearchChar}
+                          onChange={(e) => setKanjiSearchChar(e.target.value)}
+                          placeholder="Type 1 kanji..."
+                          className="w-full px-3 py-2 rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50/50 dark:bg-slate-800 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-amber-500 font-bold text-center text-lg shadow-inner"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Result Inspection Card */}
+                    {isSearchingKanji && (
+                      <div className="flex items-center gap-2 text-xs text-slate-400 py-2">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-500" />
+                        <span>Querying IndexedDB kanjiEntries...</span>
+                      </div>
+                    )}
+
+                    {!isSearchingKanji && kanjiSearchResult === null && kanjiSearchChar.trim() && (
+                      <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-xs text-slate-600 dark:text-slate-300 flex items-center justify-between gap-2">
+                        <span>
+                          Character <strong>"{Array.from(kanjiSearchChar.trim())[0]}"</strong> is <strong>not stored</strong> in this device's IndexedDB.
+                        </span>
+                        <span className="text-[11px] text-slate-400">Import a kanji list to install it.</span>
+                      </div>
+                    )}
+
+                    {!isSearchingKanji && kanjiSearchResult && (
+                      <div className="p-3.5 rounded-xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-300/70 dark:border-amber-800/70 space-y-2.5">
+                        <div className="flex items-start justify-between gap-3 flex-wrap">
+                          <div className="flex items-center gap-3">
+                            <div className="w-12 h-12 rounded-xl bg-white dark:bg-slate-800 border border-amber-200 dark:border-amber-800 flex items-center justify-center text-2xl font-bold text-amber-700 dark:text-amber-300 shadow-xs">
+                              {kanjiSearchResult.character}
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-bold text-sm text-slate-900 dark:text-white">
+                                  {kanjiSearchResult.character}
+                                </span>
+                                <span
+                                  className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
+                                    kanjiSearchResult.jlptLevel === 'N5'
+                                      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800'
+                                      : kanjiSearchResult.jlptLevel === 'N4'
+                                      ? 'bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300 border-sky-300 dark:border-sky-800'
+                                      : kanjiSearchResult.jlptLevel === 'N3'
+                                      ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border-amber-300 dark:border-amber-800'
+                                      : kanjiSearchResult.jlptLevel === 'N2'
+                                      ? 'bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-300 border-orange-300 dark:border-orange-800'
+                                      : kanjiSearchResult.jlptLevel === 'N1'
+                                      ? 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300 border-rose-300 dark:border-rose-800'
+                                      : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 border-slate-300'
+                                  }`}
+                                >
+                                  JLPT: {kanjiSearchResult.jlptLevel || 'No level'}
+                                </span>
+                                {kanjiSearchResult.strokeCount && (
+                                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-mono">
+                                    {kanjiSearchResult.strokeCount} strokes
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-slate-700 dark:text-slate-300 mt-1 font-medium">
+                                Meanings: {kanjiSearchResult.meanings?.join(', ') || '(none)'}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="text-[10px] text-slate-400 font-mono text-right">
+                            <span>Imports: {kanjiSearchResult.importIds?.join(', ') || 'unknown'}</span>
+                          </div>
+                        </div>
+
+                        {/* Readings */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2 border-t border-amber-200/50 dark:border-amber-900/40 text-xs">
+                          <div>
+                            <span className="font-semibold text-slate-500 dark:text-slate-400">On-yomi (音):</span>{' '}
+                            <span className="font-bold text-slate-800 dark:text-slate-200">
+                              {kanjiSearchResult.readings?.on?.join(', ') || '(none)'}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="font-semibold text-slate-500 dark:text-slate-400">Kun-yomi (訓):</span>{' '}
+                            <span className="font-bold text-slate-800 dark:text-slate-200">
+                              {kanjiSearchResult.readings?.kun?.join(', ') || '(none)'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

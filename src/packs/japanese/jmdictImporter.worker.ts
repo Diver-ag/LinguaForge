@@ -46,9 +46,11 @@ class WorkerLinguaForgeDB extends Dexie {
 let isCancelled = false;
 let hasNonEnglishFound = false;
 
-// CSV Parser handling quotes and delimiters
+// CSV Parser handling quotes, delimiters, BOM, and NFC normalization
 function parseCsvRows(text: string): { headers: string[]; rows: string[][] } {
-  const rawLines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  // Strip UTF-8 BOM if present
+  const cleanText = text.replace(/^\uFEFF/, '');
+  const rawLines = cleanText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   if (rawLines.length === 0) return { headers: [], rows: [] };
 
   const parsedLines: string[][] = [];
@@ -62,13 +64,13 @@ function parseCsvRows(text: string): { headers: string[]; rows: string[][] } {
       if (ch === '"') {
         inQuotes = !inQuotes;
       } else if ((ch === ',' || ch === '\t') && !inQuotes) {
-        row.push(cur.trim().replace(/^["']|["']$/g, ''));
+        row.push(cur.trim().replace(/^["']|["']$/g, '').normalize('NFC'));
         cur = '';
       } else {
         cur += ch;
       }
     }
-    row.push(cur.trim().replace(/^["']|["']$/g, ''));
+    row.push(cur.trim().replace(/^["']|["']$/g, '').normalize('NFC'));
     if (row.some(Boolean)) {
       parsedLines.push(row);
     }
@@ -76,10 +78,30 @@ function parseCsvRows(text: string): { headers: string[]; rows: string[][] } {
 
   if (parsedLines.length === 0) return { headers: [], rows: [] };
 
-  const first = parsedLines[0].map((s) => s.toLowerCase());
-  const hasHeader = first.some((s) =>
-    ['expression', 'word', 'kanji', 'reading', 'kana', 'level', 'jlpt', 'rank', 'frequency'].includes(s)
-  );
+  const first = parsedLines[0].map((s) => s.toLowerCase().trim().replace(/^\uFEFF/, ''));
+  const headerKeywords = [
+    'expression',
+    'word',
+    'kanji',
+    'character',
+    'char',
+    'reading',
+    'readings',
+    'kana',
+    'level',
+    'jlpt',
+    'grade',
+    'rank',
+    'frequency',
+    'onyomi',
+    'kunyomi',
+    'meaning',
+    'meanings',
+    'definition',
+    'stroke',
+    'strokes',
+  ];
+  const hasHeader = first.some((s) => headerKeywords.some((keyword) => s.includes(keyword)));
 
   if (hasHeader) {
     return { headers: first, rows: parsedLines.slice(1) };
@@ -505,8 +527,19 @@ self.addEventListener('message', async (e: MessageEvent) => {
             if (charIdx === -1) charIdx = 0;
           }
 
+          // If lvlIdx still -1, inspect rows for N1-N5 or 1-5 level column
+          if (lvlIdx === -1 && rows.length > 0) {
+            const sampleRows = rows.slice(0, 5);
+            for (let c = 0; c < (sampleRows[0]?.length || 0); c++) {
+              if (c !== charIdx && sampleRows.some((r) => r[c] && /^N?[1-5]$/i.test(r[c].trim()))) {
+                lvlIdx = c;
+                break;
+              }
+            }
+          }
+
           for (const row of rows) {
-            const rawChar = (row[charIdx] || '').trim();
+            const rawChar = (row[charIdx] || '').normalize('NFC').trim();
             // Validate single kanji ideograph
             if (!rawChar || !/^[\u4e00-\u9faf\u3400-\u4dbf々〆〇]$/.test(rawChar)) {
               skippedCount++;

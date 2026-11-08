@@ -415,6 +415,24 @@ export const JAPANESE_KANJI_DATABASE: Record<string, KanjiDetail> = {
     frequencyRank: 211,
     jlptLevel: 'N5',
   },
+  店: {
+    character: '店',
+    meanings: ['store', 'shop'],
+    readings: { on: ['テン'], kun: ['みせ', 'たな'] },
+    strokeCount: 8,
+    radicals: ['广 (cliff)', '占 (fortune)'],
+    frequencyRank: 284,
+    jlptLevel: 'N5',
+  },
+  員: {
+    character: '員',
+    meanings: ['employee', 'member', 'clerk', 'number'],
+    readings: { on: ['イン'], kun: [] },
+    strokeCount: 10,
+    radicals: ['口 (mouth)', '貝 (shellfish)'],
+    frequencyRank: 168,
+    jlptLevel: 'N4',
+  },
 };
 
 export function getKanjiBreakdown(word: string): KanjiDetail[] {
