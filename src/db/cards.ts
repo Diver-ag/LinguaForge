@@ -223,6 +223,15 @@ export async function addCardsForWord(params: {
       updatedAt: now,
       suspended: false,
       buried: false,
+      due: now,
+      stability: 0,
+      difficulty: 0,
+      reps: 0,
+      lapses: 0,
+      state: 0,
+      scheduledDays: 0,
+      elapsedDays: 0,
+      learningSteps: 0,
     };
 
     await db.cards.put(newCard);

@@ -1,5 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { db } from '../../db/db';
+import { db, type DeckItem } from '../../db/db';
+import { ensureDefaultDeck } from '../../db/cards';
+import {
+  DEFAULT_STUDY_SETTINGS,
+  getEffectiveDeckLimits,
+  getStudySettings,
+  saveDeckStudySettings,
+  saveStudySettings,
+  type NewCardMix,
+  type NewCardOrder,
+  type StudySettings,
+} from '../../core/studySettings';
 import { useAppStore, type AppTheme, type FuriganaMode, type FontSize } from '../../store/useAppStore';
 import {
   getStoredApiKey,
@@ -33,10 +44,12 @@ import {
   Loader2,
   Cpu,
   Info,
+  GraduationCap,
 } from 'lucide-react';
 
 export const SettingsView: React.FC = () => {
   const {
+    activeLanguageId,
     theme,
     setTheme,
     furiganaMode,
@@ -50,6 +63,12 @@ export const SettingsView: React.FC = () => {
     geminiModel,
     setGeminiModel,
   } = useAppStore();
+
+  // Study / FSRS settings state
+  const [studySettings, setStudySettings] = useState<StudySettings>(DEFAULT_STUDY_SETTINGS);
+  const [studyDecks, setStudyDecks] = useState<DeckItem[]>([]);
+  const [studyScopeDeckId, setStudyScopeDeckId] = useState<string>('global');
+  const [studySavedToast, setStudySavedToast] = useState(false);
 
   const [apiKey, setApiKey] = useState('');
   const [isSavingKey, setIsSavingKey] = useState(false);
@@ -113,10 +132,79 @@ export const SettingsView: React.FC = () => {
       const events = await getRecentEvents(50);
       setEventLogs(events);
 
+      const loadedStudy = await getStudySettings();
+      setStudySettings(loadedStudy);
+
       loadDiagnostics();
     }
     loadData();
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadStudyDecks() {
+      await ensureDefaultDeck(activeLanguageId);
+      const list = await db.decks.where('languageId').equals(activeLanguageId).toArray();
+      if (!cancelled) {
+        setStudyDecks(list);
+        setStudyScopeDeckId((prev) =>
+          prev === 'global' || list.some((d) => d.id === prev) ? prev : 'global'
+        );
+      }
+    }
+    loadStudyDecks().catch(console.error);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeLanguageId]);
+
+  const flashStudyToast = () => {
+    setStudySavedToast(true);
+    setTimeout(() => setStudySavedToast(false), 1800);
+  };
+
+  const handleUpdateGlobalStudy = async (patch: Partial<StudySettings>) => {
+    const next = await saveStudySettings(patch);
+    setStudySettings(next);
+    flashStudyToast();
+  };
+
+  const selectedDeckForStudy =
+    studyScopeDeckId !== 'global'
+      ? studyDecks.find((d) => d.id === studyScopeDeckId)
+      : undefined;
+
+  const effectiveDeckLimits = getEffectiveDeckLimits(selectedDeckForStudy, studySettings);
+
+  const handleUpdateDeckLimits = async (patch: {
+    newCardsPerDay?: number;
+    maxReviewsPerDay?: number;
+    newCardOrder?: NewCardOrder;
+  }) => {
+    if (!selectedDeckForStudy) return;
+    const nextDeckSettings = {
+      ...(selectedDeckForStudy.studySettings || {}),
+      ...patch,
+    };
+    await saveDeckStudySettings(selectedDeckForStudy.id, nextDeckSettings);
+    setStudyDecks((prev) =>
+      prev.map((d) =>
+        d.id === selectedDeckForStudy.id ? { ...d, studySettings: nextDeckSettings } : d
+      )
+    );
+    flashStudyToast();
+  };
+
+  const handleResetDeckLimitsToGlobal = async () => {
+    if (!selectedDeckForStudy) return;
+    await saveDeckStudySettings(selectedDeckForStudy.id, undefined);
+    setStudyDecks((prev) =>
+      prev.map((d) =>
+        d.id === selectedDeckForStudy.id ? { ...d, studySettings: undefined } : d
+      )
+    );
+    flashStudyToast();
+  };
 
   const loadModelList = async (keyToUse: string, currentSelectedModel?: string) => {
     if (!keyToUse) return;
@@ -624,6 +712,286 @@ export const SettingsView: React.FC = () => {
             </div>
           </div>
         </div>
+
+        {/* Study & Spaced Repetition (FSRS) */}
+        <section
+          aria-label="Study Settings"
+          className="p-6 rounded-3xl bg-[var(--surface)] border border-[var(--border)] shadow-xs space-y-6"
+        >
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-1">
+              <h2 className="font-bold text-base text-[var(--text)] flex items-center gap-2">
+                <GraduationCap className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                <span>Study & Spaced Repetition (FSRS)</span>
+              </h2>
+              <p className="text-xs text-[var(--text-muted)]">
+                Daily study limits, queue order, FSRS retention, and leech thresholds.
+              </p>
+            </div>
+
+            {studySavedToast && (
+              <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-semibold">
+                <CheckCircle className="w-4 h-4" />
+                <span>Saved</span>
+              </div>
+            )}
+          </div>
+
+          {/* Scope selector for daily limits (Global Default vs Per-Deck override) */}
+          <div className="p-4 rounded-2xl bg-[var(--surface-muted)]/60 border border-[var(--border)] space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="space-y-0.5">
+                <label className="text-xs font-bold text-[var(--text)] block">
+                  Daily Limits Scope
+                </label>
+                <p className="text-[11px] text-[var(--text-muted)]">
+                  Configure global defaults or override limits per deck.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <select
+                  value={studyScopeDeckId}
+                  onChange={(e) => setStudyScopeDeckId(e.target.value)}
+                  aria-label="Daily limits scope"
+                  className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-xs font-semibold text-[var(--text)]"
+                >
+                  <option value="global">Global Default (All Decks)</option>
+                  {studyDecks.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      Deck: {d.name} {d.studySettings ? '(Custom)' : ''}
+                    </option>
+                  ))}
+                </select>
+                {selectedDeckForStudy && effectiveDeckLimits.hasOverrides && (
+                  <button
+                    type="button"
+                    onClick={handleResetDeckLimitsToGlobal}
+                    className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] hover:bg-[var(--surface-muted)] text-xs font-semibold text-[var(--text-secondary)] whitespace-nowrap"
+                  >
+                    Use Global
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+              <label className="space-y-1">
+                <span className="font-semibold text-[var(--text-secondary)] block">
+                  New cards / day
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  max={9999}
+                  value={
+                    selectedDeckForStudy
+                      ? effectiveDeckLimits.newCardsPerDay
+                      : studySettings.newCardsPerDay
+                  }
+                  onChange={(e) => {
+                    const val = Math.max(0, Math.round(Number(e.target.value) || 0));
+                    if (selectedDeckForStudy) {
+                      handleUpdateDeckLimits({ newCardsPerDay: val });
+                    } else {
+                      handleUpdateGlobalStudy({ newCardsPerDay: val });
+                    }
+                  }}
+                  className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] tabular-nums"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="font-semibold text-[var(--text-secondary)] block">
+                  Max reviews / day
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  max={99999}
+                  value={
+                    selectedDeckForStudy
+                      ? effectiveDeckLimits.maxReviewsPerDay
+                      : studySettings.maxReviewsPerDay
+                  }
+                  onChange={(e) => {
+                    const val = Math.max(0, Math.round(Number(e.target.value) || 0));
+                    if (selectedDeckForStudy) {
+                      handleUpdateDeckLimits({ maxReviewsPerDay: val });
+                    } else {
+                      handleUpdateGlobalStudy({ maxReviewsPerDay: val });
+                    }
+                  }}
+                  className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] tabular-nums"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="font-semibold text-[var(--text-secondary)] block">
+                  New card order
+                </span>
+                <select
+                  value={
+                    selectedDeckForStudy
+                      ? effectiveDeckLimits.newCardOrder
+                      : studySettings.newCardOrder
+                  }
+                  onChange={(e) => {
+                    const val = e.target.value as NewCardOrder;
+                    if (selectedDeckForStudy) {
+                      handleUpdateDeckLimits({ newCardOrder: val });
+                    } else {
+                      handleUpdateGlobalStudy({ newCardOrder: val });
+                    }
+                  }}
+                  className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text)]"
+                >
+                  <option value="added">As added (oldest first)</option>
+                  <option value="random">Random</option>
+                </select>
+              </label>
+            </div>
+          </div>
+
+          {/* Queue Mix, Reset Hour, Leech Threshold */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+            <label className="space-y-1">
+              <span className="font-semibold text-[var(--text-secondary)] block">
+                New cards vs reviews
+              </span>
+              <select
+                value={studySettings.newCardMix}
+                onChange={(e) =>
+                  handleUpdateGlobalStudy({ newCardMix: e.target.value as NewCardMix })
+                }
+                className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text)]"
+              >
+                <option value="first">Show new cards first</option>
+                <option value="mixed">Mix evenly with reviews</option>
+                <option value="after">Show after reviews</option>
+              </select>
+            </label>
+
+            <label className="space-y-1">
+              <span className="font-semibold text-[var(--text-secondary)] block">
+                Next day starts at (local)
+              </span>
+              <select
+                value={studySettings.dayResetHour}
+                onChange={(e) =>
+                  handleUpdateGlobalStudy({ dayResetHour: Number(e.target.value) })
+                }
+                className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text)] tabular-nums"
+              >
+                {Array.from({ length: 24 }, (_, h) => {
+                  const label = new Date(2026, 0, 1, h, 0).toLocaleTimeString([], {
+                    hour: 'numeric',
+                    minute: '2-digit',
+                  });
+                  return (
+                    <option key={h} value={h}>
+                      {label}
+                    </option>
+                  );
+                })}
+              </select>
+            </label>
+
+            <label className="space-y-1">
+              <span className="font-semibold text-[var(--text-secondary)] block">
+                Leech lapse threshold
+              </span>
+              <input
+                type="number"
+                min={1}
+                max={100}
+                value={studySettings.leechThreshold}
+                onChange={(e) =>
+                  handleUpdateGlobalStudy({
+                    leechThreshold: Math.max(1, Math.round(Number(e.target.value) || 8)),
+                  })
+                }
+                className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text)] tabular-nums"
+              />
+            </label>
+          </div>
+
+          {/* FSRS Retention Slider, Max Interval, Fuzz */}
+          <div className="pt-4 border-t border-[var(--border)] space-y-4 text-xs">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label
+                  htmlFor="desired-retention-slider"
+                  className="font-semibold text-[var(--text)]"
+                >
+                  Desired retention
+                </label>
+                <span className="font-mono font-bold text-sm text-indigo-600 dark:text-indigo-400 tabular-nums">
+                  {studySettings.desiredRetention.toFixed(2)} ({Math.round(studySettings.desiredRetention * 100)}%)
+                </span>
+              </div>
+              <input
+                id="desired-retention-slider"
+                type="range"
+                min={0.7}
+                max={0.97}
+                step={0.01}
+                value={studySettings.desiredRetention}
+                onChange={(e) =>
+                  handleUpdateGlobalStudy({ desiredRetention: Number(e.target.value) })
+                }
+                className="w-full accent-indigo-600 cursor-pointer"
+              />
+              <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">
+                Target recall probability when a card becomes due (default 0.90). Higher values schedule shorter intervals and more daily reviews. Changes only affect future scheduling.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <label className="space-y-1">
+                <span className="font-semibold text-[var(--text-secondary)] block">
+                  Maximum interval (days)
+                </span>
+                <input
+                  type="number"
+                  min={1}
+                  max={36500}
+                  value={studySettings.maximumInterval}
+                  onChange={(e) =>
+                    handleUpdateGlobalStudy({
+                      maximumInterval: Math.max(1, Math.round(Number(e.target.value) || 36500)),
+                    })
+                  }
+                  className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text)] tabular-nums"
+                />
+              </label>
+
+              <div className="space-y-1">
+                <span className="font-semibold text-[var(--text-secondary)] block">
+                  Interval fuzzing
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleUpdateGlobalStudy({ enableFuzz: !studySettings.enableFuzz })
+                  }
+                  className={`w-full min-h-[40px] px-3 py-1.5 rounded-xl border font-semibold flex items-center justify-between transition ${
+                    studySettings.enableFuzz
+                      ? 'border-emerald-500 bg-emerald-50/70 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+                      : 'border-[var(--border)] text-[var(--text-muted)]'
+                  }`}
+                >
+                  <span>
+                    {studySettings.enableFuzz
+                      ? 'Enabled (slight random jitter prevents clumping)'
+                      : 'Disabled (exact intervals)'}
+                  </span>
+                  <span className="font-bold">{studySettings.enableFuzz ? 'ON' : 'OFF'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
 
         {/* Local-First JSON Backup & Restore */}
         <div className="p-6 rounded-3xl bg-[var(--surface)] border border-[var(--border)] shadow-xs space-y-4">

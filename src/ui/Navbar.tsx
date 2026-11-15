@@ -16,6 +16,7 @@ import {
   Wifi,
   WifiOff,
   Layers,
+  GraduationCap,
 } from 'lucide-react';
 
 export const Navbar: React.FC = () => {
@@ -40,6 +41,7 @@ export const Navbar: React.FC = () => {
     { to: '/library', label: 'Library', icon: FolderOpen },
     { to: '/reader', label: 'Reader', icon: BookOpen },
     { to: '/cards', label: 'Cards', icon: Layers },
+    { to: '/review', label: 'Review', icon: GraduationCap },
     { to: '/history', label: 'History', icon: History },
     { to: '/packs', label: 'Packs', icon: Package },
     { to: '/settings', label: 'Settings', icon: Settings },
@@ -153,7 +155,7 @@ export const Navbar: React.FC = () => {
       </header>
 
       {/* Mobile Bottom Navigation Bar */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[var(--surface)]/95 backdrop-blur-md border-t border-[var(--border)] px-2 py-1.5 flex items-center justify-around">
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[var(--surface)]/95 backdrop-blur-md border-t border-[var(--border)] px-1 py-1 grid grid-cols-7 items-center">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = location.pathname.startsWith(item.to);
@@ -161,13 +163,13 @@ export const Navbar: React.FC = () => {
             <NavLink
               key={item.to}
               to={item.to}
-              className={`flex flex-col items-center py-1 px-2 rounded-xl transition text-[10px] sm:text-[11px] font-bold whitespace-nowrap ${
+              className={`flex flex-col items-center justify-center min-h-[44px] py-1 px-0.5 rounded-xl transition text-[10px] font-bold whitespace-nowrap ${
                 isActive
                   ? 'text-[var(--accent-text)]'
                   : 'text-[var(--text-muted)] hover:text-[var(--text)]'
               }`}
             >
-              <Icon className="w-5 h-5 mb-0.5" />
+              <Icon className="w-4 h-4 mb-0.5" />
               <span>{item.label}</span>
             </NavLink>
           );

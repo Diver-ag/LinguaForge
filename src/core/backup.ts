@@ -127,7 +127,24 @@ export async function restoreFromBackup(jsonData: string): Promise<{ success: bo
         }
         if (Array.isArray(data.cards)) {
           await db.cards.clear();
-          if (data.cards.length > 0) await db.cards.bulkPut(data.cards);
+          const now = Date.now();
+          const normalizedCards: CardItem[] = data.cards.map((c: any) => ({
+            ...c,
+            tags: Array.isArray(c.tags) ? c.tags : [],
+            notes: c.notes ?? '',
+            suspended: Boolean(c.suspended),
+            buried: Boolean(c.buried),
+            state: c.state ?? 0,
+            stability: c.stability ?? 0,
+            difficulty: c.difficulty ?? 0,
+            reps: c.reps ?? 0,
+            lapses: c.lapses ?? 0,
+            scheduledDays: c.scheduledDays ?? 0,
+            elapsedDays: c.elapsedDays ?? 0,
+            learningSteps: c.learningSteps ?? 0,
+            due: c.due ?? c.createdAt ?? now,
+          }));
+          if (normalizedCards.length > 0) await db.cards.bulkPut(normalizedCards);
         } else if (Array.isArray(data.flashcards) && data.flashcards.length > 0) {
           // Legacy v1 backup compatibility: map flashcards into cards + default decks
           const migrated: CardItem[] = (data.flashcards as FlashcardItem[]).map((fc, idx) => {
@@ -155,6 +172,15 @@ export async function restoreFromBackup(jsonData: string): Promise<{ success: bo
               updatedAt: created,
               suspended: false,
               buried: false,
+              due: created,
+              stability: 0,
+              difficulty: 0,
+              reps: 0,
+              lapses: 0,
+              state: 0,
+              scheduledDays: 0,
+              elapsedDays: 0,
+              learningSteps: 0,
             };
           });
           await db.cards.clear();

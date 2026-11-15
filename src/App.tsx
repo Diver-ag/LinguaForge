@@ -10,6 +10,7 @@ import { HistoryView } from './features/history/HistoryView';
 import { LanguagePacksView } from './features/packs/LanguagePacksView';
 import { SettingsView } from './features/settings/SettingsView';
 import { CardsView } from './features/cards/CardsView';
+import { ReviewView } from './features/review/ReviewView';
 
 import { backfillFlashcards } from './db/db';
 import { ensureAllDefaultDecks } from './db/cards';
@@ -35,6 +36,7 @@ export default function App() {
             <Route path="/library" element={<LibraryView />} />
             <Route path="/reader" element={<ReaderView />} />
             <Route path="/cards" element={<CardsView />} />
+            <Route path="/review" element={<ReviewView />} />
             <Route path="/history" element={<HistoryView />} />
             <Route path="/packs" element={<LanguagePacksView />} />
             <Route path="/settings" element={<SettingsView />} />

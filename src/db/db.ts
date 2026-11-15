@@ -53,12 +53,19 @@ export interface SettingItem {
 
 export type CardType = 'word_to_meaning' | 'meaning_to_word' | 'reading';
 
+export interface DeckStudySettings {
+  newCardsPerDay?: number;
+  maxReviewsPerDay?: number;
+  newCardOrder?: 'added' | 'random';
+}
+
 export interface DeckItem {
   id: string;
   name: string;
   languageId: string;
   createdAt: number;
   description?: string;
+  studySettings?: DeckStudySettings;
 }
 
 export interface CardItem {
@@ -84,24 +91,34 @@ export interface CardItem {
   updatedAt: number;
   suspended: boolean;
   buried: boolean;
-  // Empty scheduling fields reserved for SRS phase
+  buriedUntil?: number;
+  // FSRS scheduling fields
   due?: number;
   stability?: number;
   difficulty?: number;
   reps?: number;
   lapses?: number;
-  state?: number;
+  state?: number; // 0=New, 1=Learning, 2=Review, 3=Relearning
   lastReview?: number;
+  scheduledDays?: number;
+  elapsedDays?: number;
+  learningSteps?: number;
 }
 
 export interface ReviewLogItem {
   id: string;
   cardId: string;
-  rating: number;
+  deckId?: string;
+  languageId?: string;
+  rating: number; // 1=Again, 2=Hard, 3=Good, 4=Easy
   reviewedAt: number;
-  elapsed: number;
+  elapsed: number; // response time in ms
+  previousState: number;
+  state: number; // new state
   scheduledDays: number;
-  state: number;
+  previousDue?: number;
+  newDue?: number;
+  isCustomStudy?: boolean;
 }
 
 export interface FlashcardItem {
@@ -431,6 +448,46 @@ export class LinguaForgeDatabase extends Dexie {
           });
           await cardsTable.bulkPut(migratedCards);
         }
+      });
+
+    this.version(8)
+      .stores({
+        cards:
+          'id, deckId, languageId, cardType, word, lemma, [lemma+reading+cardType], [languageId+deckId], level, sourceDocId, *tags, suspended, buried, buriedUntil, state, due, createdAt, updatedAt',
+        reviewLogs: 'id, cardId, deckId, languageId, reviewedAt, state',
+      })
+      .upgrade(async (trans) => {
+        const cardsTable = trans.table('cards');
+        const now = Date.now();
+        await cardsTable.toCollection().modify((card: any) => {
+          if (card.state === undefined || card.state === null) {
+            card.state = 0; // State.New
+          }
+          if (card.stability === undefined || card.stability === null) {
+            card.stability = 0;
+          }
+          if (card.difficulty === undefined || card.difficulty === null) {
+            card.difficulty = 0;
+          }
+          if (card.reps === undefined || card.reps === null) {
+            card.reps = 0;
+          }
+          if (card.lapses === undefined || card.lapses === null) {
+            card.lapses = 0;
+          }
+          if (card.scheduledDays === undefined || card.scheduledDays === null) {
+            card.scheduledDays = 0;
+          }
+          if (card.elapsedDays === undefined || card.elapsedDays === null) {
+            card.elapsedDays = 0;
+          }
+          if (card.learningSteps === undefined || card.learningSteps === null) {
+            card.learningSteps = 0;
+          }
+          if (card.due === undefined || card.due === null) {
+            card.due = card.createdAt || now;
+          }
+        });
       });
   }
 }
