@@ -20,6 +20,13 @@ import {
   deleteKuromojiOfflineCache,
 } from '../../packs/japanese/tokenizer';
 import { JAPANESE_DICTIONARY_SAMPLE } from '../../packs/japanese/dictionaryData';
+import {
+  parseKanjiListTable,
+  buildKanjiPreviewRows,
+  type ParsedKanjiTable,
+  type KanjiColumnMapping,
+} from '../../packs/japanese/kanjiListParser';
+import JSZip from 'jszip';
 import { useAppStore } from '../../store/useAppStore';
 import { logEvent } from '../../core/eventLogger';
 import {
@@ -113,6 +120,18 @@ export const LanguagePacksView: React.FC = () => {
   const [importProcessed, setImportProcessed] = useState(0);
   const [importTotal, setImportTotal] = useState(0);
   const [importError, setImportError] = useState<string | null>(null);
+
+  // Kanji list preview & column mapping state (Requirement 3)
+  const [kanjiPreviewFiles, setKanjiPreviewFiles] = useState<
+    Array<{
+      fileName: string;
+      text: string;
+      size: number;
+      parsed: ParsedKanjiTable;
+      mapping: KanjiColumnMapping;
+    }>
+  >([]);
+  const [activePreviewIndex, setActivePreviewIndex] = useState(0);
 
   // Import Summary modal state (Requirement 2 & 5)
   const [importSummary, setImportSummary] = useState<{
@@ -543,6 +562,8 @@ export const LanguagePacksView: React.FC = () => {
           kind: data.kind,
         });
         setShowImportModal(false);
+        setKanjiPreviewFiles([]);
+        setActivePreviewIndex(0);
         setImportStatusMessage('');
 
         // Display summary modal with matched/unmatched (for vocab/frequency) or per-level/duplicate/skipped (for kanji-levels)
@@ -593,39 +614,109 @@ export const LanguagePacksView: React.FC = () => {
     setImportStatusMessage('Import cancelled.');
   };
 
+  const readKanjiFileAsText = async (file: File): Promise<string> => {
+    const lower = file.name.toLowerCase();
+    if (lower.endsWith('.zip')) {
+      const buf = await file.arrayBuffer();
+      const zip = await JSZip.loadAsync(buf);
+      const entry = Object.values(zip.files).find(
+        (f) => !f.dir && /\.(csv|tsv|json|txt)$/i.test(f.name)
+      );
+      if (!entry) {
+        throw new Error(`No .csv, .tsv, or .json file found inside "${file.name}"`);
+      }
+      return await entry.async('text');
+    }
+    if (lower.endsWith('.gz') && typeof DecompressionStream !== 'undefined') {
+      const buf = await file.arrayBuffer();
+      const stream = new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip')));
+      return await stream.text();
+    }
+    return await file.text();
+  };
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const fileList = e.target.files;
     if (!fileList || fileList.length === 0) return;
 
     setImportError(null);
 
-    if (selectedKind === 'kanji-levels' && fileList.length > 1) {
-      const filesArray: Array<{ fileName: string; text: string; size: number }> = [];
-      for (let i = 0; i < fileList.length; i++) {
-        const f = fileList[i];
-        const text = await f.text();
-        filesArray.push({
-          fileName: f.name,
-          text,
-          size: f.size,
-        });
+    if (selectedKind === 'kanji-levels') {
+      try {
+        const previews: Array<{
+          fileName: string;
+          text: string;
+          size: number;
+          parsed: ParsedKanjiTable;
+          mapping: KanjiColumnMapping;
+        }> = [];
+
+        for (let i = 0; i < fileList.length; i++) {
+          const f = fileList[i];
+          const text = await readKanjiFileAsText(f);
+          const parsed = parseKanjiListTable(text, f.name);
+          if (parsed.rows.length === 0) {
+            throw new Error(`No rows found in "${f.name}". Check that it is valid CSV, TSV, or JSON.`);
+          }
+          previews.push({
+            fileName: f.name,
+            text,
+            size: f.size,
+            parsed,
+            mapping: { ...parsed.detectedMapping },
+          });
+        }
+
+        setKanjiPreviewFiles(previews);
+        setActivePreviewIndex(0);
+      } catch (err: any) {
+        setImportError(err?.message || 'Failed to parse kanji file for preview');
+      } finally {
+        e.target.value = '';
       }
-      startImportWorker({
-        source: 'files',
-        files: filesArray,
-        fileName: `${filesArray.length} kanji files`,
-        explicitKind: 'kanji-levels',
-      });
-    } else {
-      const file = fileList[0];
-      const buffer = await file.arrayBuffer();
-      startImportWorker({
-        source: 'file',
-        fileData: buffer,
-        fileName: file.name,
-        explicitKind: selectedKind,
-      });
+      return;
     }
+
+    const file = fileList[0];
+    const buffer = await file.arrayBuffer();
+    e.target.value = '';
+    startImportWorker({
+      source: 'file',
+      fileData: buffer,
+      fileName: file.name,
+      explicitKind: selectedKind,
+    });
+  };
+
+  const handleConfirmKanjiPreviewImport = () => {
+    if (kanjiPreviewFiles.length === 0) return;
+    setImportError(null);
+    const filesPayload = kanjiPreviewFiles.map((item) => ({
+      fileName: item.fileName,
+      text: item.text,
+      size: item.size,
+      columnMapping: item.mapping,
+    }));
+
+    startImportWorker({
+      source: 'files',
+      files: filesPayload,
+      fileName:
+        filesPayload.length === 1
+          ? filesPayload[0].fileName
+          : `${filesPayload.length} kanji files`,
+      explicitKind: 'kanji-levels',
+    });
+  };
+
+  const updatePreviewMapping = (field: keyof KanjiColumnMapping, value: number) => {
+    setKanjiPreviewFiles((prev) =>
+      prev.map((item, idx) =>
+        idx === activePreviewIndex
+          ? { ...item, mapping: { ...item.mapping, [field]: value } }
+          : item
+      )
+    );
   };
 
   const handleUrlImport = () => {
@@ -1675,7 +1766,13 @@ export const LanguagePacksView: React.FC = () => {
       {/* JMdict Dictionary & Multi-Pack Import Modal */}
       {showImportModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-150">
-          <div className="w-full max-w-xl bg-[var(--surface)] border border-[var(--border)] rounded-3xl shadow-2xl overflow-hidden p-6 space-y-4">
+          <div
+            className={`w-full ${
+              kanjiPreviewFiles.length > 0 && selectedKind === 'kanji-levels' && importTab === 'upload' && !isImporting
+                ? 'max-w-3xl'
+                : 'max-w-xl'
+            } max-h-[90vh] overflow-y-auto bg-[var(--surface)] border border-[var(--border)] rounded-3xl shadow-2xl p-6 space-y-4`}
+          >
             <div className="flex items-center justify-between border-b border-[var(--border)] pb-3">
               <div className="flex items-center gap-2">
                 <Database className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
@@ -1687,6 +1784,8 @@ export const LanguagePacksView: React.FC = () => {
                 onClick={() => {
                   if (isImporting) handleCancelImport();
                   setShowImportModal(false);
+                  setKanjiPreviewFiles([]);
+                  setActivePreviewIndex(0);
                 }}
                 className="p-1.5 rounded-xl text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-muted)]"
               >
@@ -1705,7 +1804,12 @@ export const LanguagePacksView: React.FC = () => {
                     (k) => (
                       <button
                         key={k}
-                        onClick={() => setSelectedKind(k)}
+                        onClick={() => {
+                          setSelectedKind(k);
+                          setKanjiPreviewFiles([]);
+                          setActivePreviewIndex(0);
+                          setImportError(null);
+                        }}
                         className={`px-3 py-1 rounded-xl transition ${
                           selectedKind === k
                             ? 'bg-indigo-600 text-white shadow-xs'
@@ -1734,7 +1838,10 @@ export const LanguagePacksView: React.FC = () => {
                   Upload File
                 </button>
                 <button
-                  onClick={() => setImportTab('url')}
+                  onClick={() => {
+                    setImportTab('url');
+                    setKanjiPreviewFiles([]);
+                  }}
                   className={`flex-1 py-1.5 rounded-lg transition ${
                     importTab === 'url'
                       ? 'bg-[var(--surface)] text-[var(--accent-text)] shadow-xs'
@@ -1744,7 +1851,10 @@ export const LanguagePacksView: React.FC = () => {
                   Download URL
                 </button>
                 <button
-                  onClick={() => setImportTab('sample')}
+                  onClick={() => {
+                    setImportTab('sample');
+                    setKanjiPreviewFiles([]);
+                  }}
                   className={`flex-1 py-1.5 rounded-lg transition ${
                     importTab === 'sample'
                       ? 'bg-[var(--surface)] text-[var(--accent-text)] shadow-xs'
@@ -1759,99 +1869,323 @@ export const LanguagePacksView: React.FC = () => {
             {/* Tab 1: File Upload */}
             {!isImporting && importTab === 'upload' && (
               <div className="space-y-4 py-2">
-                <div className="border-2 border-dashed border-slate-300 dark:border-slate-700 rounded-2xl p-6 sm:p-8 text-center space-y-3 hover:border-indigo-500 transition">
-                  <Upload className="w-10 h-10 text-indigo-500 mx-auto" />
-                  <div>
-                    <p className="text-sm font-bold text-slate-900 dark:text-white">
-                      Select {selectedKind === 'kanji-levels' ? 'Kanji CSV file(s)' : `${selectedKind.toUpperCase()} file`}
+                {selectedKind === 'kanji-levels' && kanjiPreviewFiles.length > 0 ? (
+                  (() => {
+                    const activeItem = kanjiPreviewFiles[activePreviewIndex] || kanjiPreviewFiles[0];
+                    const previewRows = buildKanjiPreviewRows(activeItem.parsed, activeItem.mapping, 5);
+                    const totalRowsAllFiles = kanjiPreviewFiles.reduce(
+                      (sum, item) => sum + item.parsed.rows.length,
+                      0
+                    );
+                    const formatLabelMap: Record<string, string> = {
+                      csv: 'CSV',
+                      tsv: 'TSV',
+                      'json-map': 'JSON (character → level)',
+                      'json-array': 'JSON (array)',
+                    };
+
+                    const mappingFields: Array<{
+                      key: keyof KanjiColumnMapping;
+                      label: string;
+                      required?: boolean;
+                    }> = [
+                      { key: 'charCol', label: 'Kanji Character', required: true },
+                      { key: 'levelCol', label: 'JLPT Level' },
+                      { key: 'readingCol', label: 'Readings (auto)' },
+                      { key: 'onCol', label: 'On-yomi' },
+                      { key: 'kunCol', label: 'Kun-yomi' },
+                      { key: 'meaningCol', label: 'Meanings' },
+                      { key: 'strokeCol', label: 'Strokes' },
+                    ];
+
+                    return (
+                      <div className="space-y-4">
+                        {/* File tabs when multiple files selected */}
+                        {kanjiPreviewFiles.length > 1 && (
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {kanjiPreviewFiles.map((f, idx) => (
+                              <button
+                                key={`${f.fileName}-${idx}`}
+                                onClick={() => setActivePreviewIndex(idx)}
+                                className={`px-2.5 py-1 rounded-lg text-xs font-mono font-semibold border transition ${
+                                  idx === activePreviewIndex
+                                    ? 'bg-amber-600 text-white border-amber-600'
+                                    : 'bg-[var(--surface-muted)] text-[var(--text-secondary)] border-[var(--border)] hover:border-amber-400'
+                                }`}
+                              >
+                                {f.fileName} ({f.parsed.rows.length})
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* File metadata & inferred level banner */}
+                        <div className="p-3 rounded-2xl bg-[var(--surface-muted)] border border-[var(--border)] flex flex-wrap items-center justify-between gap-2 text-xs">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <FileText className="w-4 h-4 text-amber-500" />
+                            <span className="font-mono font-bold text-[var(--text)]">
+                              {activeItem.fileName}
+                            </span>
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300">
+                              {formatLabelMap[activeItem.parsed.format] || activeItem.parsed.format}
+                            </span>
+                            <span className="text-[var(--text-muted)]">
+                              {activeItem.parsed.rows.length.toLocaleString()} rows
+                            </span>
+                          </div>
+
+                          {activeItem.parsed.inferredLevel ? (
+                            <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                              Filename inferred: {activeItem.parsed.inferredLevel}
+                            </span>
+                          ) : (
+                            <span className="text-[11px] text-[var(--text-muted)]">
+                              No level in filename
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Column Mapping Controls */}
+                        <div className="p-3.5 rounded-2xl border border-[var(--border)] bg-[var(--surface-muted)]/50 space-y-2.5">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <h4 className="text-xs font-bold text-[var(--text)]">
+                              Column Mapping
+                            </h4>
+                            {activeItem.mapping.levelCol === -1 && activeItem.parsed.inferredLevel && (
+                              <span className="text-[11px] text-emerald-700 dark:text-emerald-300 font-medium">
+                                No level column mapped — using inferred level <strong>{activeItem.parsed.inferredLevel}</strong> from filename
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                            {mappingFields.map(({ key, label, required }) => (
+                              <label key={key} className="space-y-1 block">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)] block">
+                                  {label}
+                                  {required ? ' *' : ''}
+                                </span>
+                                <select
+                                  value={activeItem.mapping[key]}
+                                  onChange={(e) => updatePreviewMapping(key, Number(e.target.value))}
+                                  className="w-full px-2 py-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] text-xs font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                >
+                                  {!required && <option value={-1}>— None —</option>}
+                                  {activeItem.parsed.headers.map((h, colIdx) => (
+                                    <option key={colIdx} value={colIdx}>
+                                      {h} (col {colIdx + 1})
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* 5-Row Preview Table */}
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="font-bold text-[var(--text)]">
+                              5-Row Preview
+                            </span>
+                            <span className="text-[11px] text-[var(--text-muted)]">
+                              Showing {previewRows.length} of {activeItem.parsed.rows.length.toLocaleString()} rows • Accepts N5, n5, 5, "level 5" (ignores outside 1–5)
+                            </span>
+                          </div>
+
+                          <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
+                            <table className="w-full text-left border-collapse text-xs">
+                              <thead>
+                                <tr className="bg-[var(--surface-muted)] border-b border-[var(--border)] text-[11px]">
+                                  <th className="py-2 px-2.5 font-bold text-[var(--text-muted)]">#</th>
+                                  {activeItem.parsed.headers.map((h, colIdx) => {
+                                    const roles: string[] = [];
+                                    if (activeItem.mapping.charCol === colIdx) roles.push('Kanji');
+                                    if (activeItem.mapping.levelCol === colIdx) roles.push('Level');
+                                    if (activeItem.mapping.readingCol === colIdx) roles.push('Reading');
+                                    if (activeItem.mapping.onCol === colIdx) roles.push('On');
+                                    if (activeItem.mapping.kunCol === colIdx) roles.push('Kun');
+                                    if (activeItem.mapping.meaningCol === colIdx) roles.push('Meaning');
+                                    if (activeItem.mapping.strokeCol === colIdx) roles.push('Strokes');
+                                    return (
+                                      <th key={colIdx} className="py-2 px-2.5 font-bold text-[var(--text)] whitespace-nowrap">
+                                        <div>{h}</div>
+                                        {roles.length > 0 && (
+                                          <span className="inline-block mt-0.5 text-[10px] px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 font-semibold">
+                                            → {roles.join(', ')}
+                                          </span>
+                                        )}
+                                      </th>
+                                    );
+                                  })}
+                                  <th className="py-2 px-2.5 font-bold text-indigo-700 dark:text-indigo-300 whitespace-nowrap bg-indigo-50/50 dark:bg-indigo-950/30">
+                                    Parsed Result
+                                  </th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-[var(--border)]">
+                                {previewRows.map((pRow) => (
+                                  <tr key={pRow.rowIndex} className="hover:bg-[var(--surface-muted)]/40">
+                                    <td className="py-2 px-2.5 font-mono text-[11px] text-[var(--text-muted)]">
+                                      {pRow.rowIndex}
+                                    </td>
+                                    {activeItem.parsed.headers.map((_, colIdx) => (
+                                      <td
+                                        key={colIdx}
+                                        className={`py-2 px-2.5 max-w-[180px] truncate ${
+                                          colIdx === activeItem.mapping.charCol ? 'font-bold text-sm' : ''
+                                        }`}
+                                        title={pRow.rawRow[colIdx] || ''}
+                                      >
+                                        {pRow.rawRow[colIdx] || <span className="text-[var(--text-muted)] opacity-50">—</span>}
+                                      </td>
+                                    ))}
+                                    <td className="py-2 px-2.5 whitespace-nowrap bg-indigo-50/30 dark:bg-indigo-950/20">
+                                      {pRow.status === 'skipped' ? (
+                                        <span className="text-[11px] px-2 py-0.5 rounded-full font-semibold bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300">
+                                          Skipped (not kanji)
+                                        </span>
+                                      ) : pRow.status === 'ignored-level' ? (
+                                        <span
+                                          className="text-[11px] px-2 py-0.5 rounded-full font-semibold bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                                          title={pRow.statusReason}
+                                        >
+                                          {pRow.character} → {pRow.jlptLevel} ({pRow.statusReason})
+                                        </span>
+                                      ) : (
+                                        <span className="text-[11px] px-2 py-0.5 rounded-full font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+                                          {pRow.character} → {pRow.jlptLevel}
+                                        </span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        {/* Preview Action Buttons */}
+                        <div className="flex items-center justify-between gap-2 pt-2">
+                          <button
+                            onClick={() => {
+                              setKanjiPreviewFiles([]);
+                              setActivePreviewIndex(0);
+                              setImportError(null);
+                            }}
+                            className="px-3.5 py-2 rounded-xl border border-[var(--border)] text-xs font-semibold text-[var(--text-secondary)] hover:bg-[var(--surface-muted)] transition"
+                          >
+                            Choose Different File(s)
+                          </button>
+                          <button
+                            onClick={handleConfirmKanjiPreviewImport}
+                            className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold shadow-sm transition active:scale-95 flex items-center gap-1.5"
+                          >
+                            <Upload className="w-3.5 h-3.5" />
+                            Confirm & Import ({totalRowsAllFiles.toLocaleString()} rows)
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()
+                ) : (
+                  <div className="border-2 border-dashed border-slate-300 dark:border-slate-700 rounded-2xl p-6 sm:p-8 text-center space-y-3 hover:border-indigo-500 transition">
+                    <Upload className="w-10 h-10 text-indigo-500 mx-auto" />
+                    <div>
+                      <p className="text-sm font-bold text-slate-900 dark:text-white">
+                        Select {selectedKind === 'kanji-levels' ? 'Kanji CSV, TSV, or JSON file(s)' : `${selectedKind.toUpperCase()} file`}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Supports <code className="font-mono">.csv</code>, <code className="font-mono">.tsv</code>, <code className="font-mono">.json</code>, <code className="font-mono">.gz</code>, or <code className="font-mono">.zip</code>
+                        {selectedKind === 'kanji-levels' && ' (select one or multiple files)'}
+                      </p>
+                    </div>
+
+                    {/* CSV / TSV / JSON Documentation & Disclaimers based on selectedKind */}
+                    {selectedKind === 'kanji-levels' && (
+                      <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-left text-xs space-y-1.5 max-w-md mx-auto">
+                        <div className="font-bold text-amber-900 dark:text-amber-300 flex items-center gap-1.5">
+                          <Sparkles className="w-4 h-4 text-amber-500" />
+                          <span>Supported Kanji List Formats (CSV, TSV, JSON)</span>
+                        </div>
+                        <p className="text-slate-600 dark:text-slate-400">
+                          • <strong>CSV / TSV</strong>: <code className="font-mono font-semibold">character, level (optional), readings, meanings, strokes</code>
+                        </p>
+                        <p className="text-slate-600 dark:text-slate-400">
+                          • <strong>JSON</strong>: object map <code className="font-mono">{`{"気": 5}`}</code> or array <code className="font-mono">{`[{"kanji": "気", "jlpt": 5}]`}</code>
+                        </p>
+                        <div className="p-2 rounded bg-white/80 dark:bg-slate-900/80 font-mono text-[11px] text-slate-700 dark:text-slate-300 border border-amber-100 dark:border-amber-900">
+                          character,level,reading,meaning,strokes<br />
+                          学,N5,ガク・まなぶ,study; learning,8<br />
+                          気,level 5,キ,spirit,6<br />
+                          違,3,イ・ちがう,differ; wrong,13
+                        </div>
+                        <div className="text-[11px] text-amber-800 dark:text-amber-300 space-y-0.5 pt-0.5">
+                          <div>• <strong>Levels</strong>: <code className="font-mono">N5</code>, <code className="font-mono">n5</code>, <code className="font-mono">5</code>, or <code className="font-mono">"level 5"</code> all map to N5. Values outside 1–5 are ignored.</div>
+                          <div>• <strong>Auto-detect & preview</strong>: Detects kanji column, infers level from filename (e.g. <code className="font-mono">kanji-n5.csv</code> → N5), and shows a 5-row column mapping preview.</div>
+                          <div>• <strong>Duplicates</strong>: Keeps the easier level (N5 &gt; N4 &gt; N3 &gt; N2 &gt; N1).</div>
+                        </div>
+                      </div>
+                    )}
+
+                    {selectedKind === 'jlpt' && (
+                      <div className="p-3 rounded-xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800 text-left text-xs space-y-1.5 max-w-md mx-auto">
+                        <div className="font-bold text-sky-900 dark:text-sky-300 flex items-center gap-1.5">
+                          <Award className="w-4 h-4 text-sky-500" />
+                          <span>JLPT Vocabulary CSV Format Specification</span>
+                        </div>
+                        <p className="text-slate-600 dark:text-slate-400">
+                          Columns: <code className="font-mono font-semibold">expression, reading (optional), level (N5-N1)</code>
+                        </p>
+                        <div className="p-2 rounded bg-white/80 dark:bg-slate-900/80 font-mono text-[11px] text-slate-700 dark:text-slate-300 border border-sky-100 dark:border-sky-900">
+                          expression,reading,level<br />
+                          日本,にほん,N5<br />
+                          桜,さくら,N5<br />
+                          食べる,たべる,N5
+                        </div>
+                        <p className="text-[11px] text-amber-700 dark:text-amber-400 font-medium pt-1">
+                          Notice: JLPT vocabulary lists are unofficial community lists. Official JLPT specifications do not publish fixed vocabulary lists.
+                        </p>
+                      </div>
+                    )}
+
+                    {selectedKind === 'frequency' && (
+                      <div className="p-3 rounded-xl bg-teal-50 dark:bg-teal-950/40 border border-teal-200 dark:border-teal-800 text-left text-xs space-y-1.5 max-w-md mx-auto">
+                        <div className="font-bold text-teal-900 dark:text-teal-300 flex items-center gap-1.5">
+                          <BarChart3 className="w-4 h-4 text-teal-500" />
+                          <span>Frequency CSV Format Specification</span>
+                        </div>
+                        <p className="text-slate-600 dark:text-slate-400">
+                          Columns: <code className="font-mono font-semibold">word, rank</code> (or count)
+                        </p>
+                        <div className="p-2 rounded bg-white/80 dark:bg-slate-900/80 font-mono text-[11px] text-slate-700 dark:text-slate-300 border border-teal-100 dark:border-teal-900">
+                          word,rank<br />
+                          日本,120<br />
+                          見る,180<br />
+                          食べる,350
+                        </div>
+                        <p className="text-[11px] text-teal-700 dark:text-teal-300">
+                          Matches by kanji form and reading, overriding priority-tag frequency bands.
+                        </p>
+                      </div>
+                    )}
+
+                    <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                      ✓ Multiple packs coexist and merge by upsert; never deletes existing packs.
                     </p>
-                    <p className="text-xs text-slate-500 mt-1">
-                      Supports <code className="font-mono">.csv</code>, <code className="font-mono">.tsv</code>, <code className="font-mono">.json</code>, <code className="font-mono">.json.gz</code>, or <code className="font-mono">.zip</code>
-                      {selectedKind === 'kanji-levels' && ' (select one or multiple CSVs)'}
-                    </p>
+
+                    <label className="inline-block px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl cursor-pointer transition shadow-sm">
+                      {selectedKind === 'kanji-levels' ? 'Browse Kanji File(s)' : 'Browse Local File'}
+                      <input
+                        type="file"
+                        accept=".csv,.tsv,.json,.gz,.zip,.txt"
+                        multiple={selectedKind === 'kanji-levels'}
+                        onChange={handleFileUpload}
+                        className="hidden"
+                      />
+                    </label>
                   </div>
-
-                  {/* CSV Documentation & Disclaimers based on selectedKind */}
-                  {selectedKind === 'kanji-levels' && (
-                    <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-left text-xs space-y-1.5 max-w-md mx-auto">
-                      <div className="font-bold text-amber-900 dark:text-amber-300 flex items-center gap-1.5">
-                        <Sparkles className="w-4 h-4 text-amber-500" />
-                        <span>Kanji JLPT List CSV Specification</span>
-                      </div>
-                      <p className="text-slate-600 dark:text-slate-400">
-                        Columns: <code className="font-mono font-semibold">character, level (optional), readings, meanings, strokes</code>
-                      </p>
-                      <div className="p-2 rounded bg-white/80 dark:bg-slate-900/80 font-mono text-[11px] text-slate-700 dark:text-slate-300 border border-amber-100 dark:border-amber-900">
-                        character,level,reading,meaning,strokes<br />
-                        学,N5,ガク・まなぶ,study; learning,8<br />
-                        校,N5,コウ,school,10<br />
-                        違,N3,イ・ちがう,differ; wrong,13
-                      </div>
-                      <div className="text-[11px] text-amber-800 dark:text-amber-300 space-y-0.5 pt-0.5">
-                        <div>• <strong>Level inference</strong>: If file has no level column, level is inferred automatically from file name (e.g. <code className="font-mono">n5_kanji.csv</code> → N5).</div>
-                        <div>• <strong>Duplicates</strong>: If a kanji appears in several files, the easier level (N5 &gt; N4 &gt; N3 &gt; N2 &gt; N1) is kept.</div>
-                        <div>• <strong>Multi-file</strong>: You can select multiple CSV files at once.</div>
-                      </div>
-                    </div>
-                  )}
-
-                  {selectedKind === 'jlpt' && (
-                    <div className="p-3 rounded-xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800 text-left text-xs space-y-1.5 max-w-md mx-auto">
-                      <div className="font-bold text-sky-900 dark:text-sky-300 flex items-center gap-1.5">
-                        <Award className="w-4 h-4 text-sky-500" />
-                        <span>JLPT Vocabulary CSV Format Specification</span>
-                      </div>
-                      <p className="text-slate-600 dark:text-slate-400">
-                        Columns: <code className="font-mono font-semibold">expression, reading (optional), level (N5-N1)</code>
-                      </p>
-                      <div className="p-2 rounded bg-white/80 dark:bg-slate-900/80 font-mono text-[11px] text-slate-700 dark:text-slate-300 border border-sky-100 dark:border-sky-900">
-                        expression,reading,level<br />
-                        日本,にほん,N5<br />
-                        桜,さくら,N5<br />
-                        食べる,たべる,N5
-                      </div>
-                      <p className="text-[11px] text-amber-700 dark:text-amber-400 font-medium pt-1">
-                        Notice: JLPT vocabulary lists are unofficial community lists. Official JLPT specifications do not publish fixed vocabulary lists.
-                      </p>
-                    </div>
-                  )}
-
-                  {selectedKind === 'frequency' && (
-                    <div className="p-3 rounded-xl bg-teal-50 dark:bg-teal-950/40 border border-teal-200 dark:border-teal-800 text-left text-xs space-y-1.5 max-w-md mx-auto">
-                      <div className="font-bold text-teal-900 dark:text-teal-300 flex items-center gap-1.5">
-                        <BarChart3 className="w-4 h-4 text-teal-500" />
-                        <span>Frequency CSV Format Specification</span>
-                      </div>
-                      <p className="text-slate-600 dark:text-slate-400">
-                        Columns: <code className="font-mono font-semibold">word, rank</code> (or count)
-                      </p>
-                      <div className="p-2 rounded bg-white/80 dark:bg-slate-900/80 font-mono text-[11px] text-slate-700 dark:text-slate-300 border border-teal-100 dark:border-teal-900">
-                        word,rank<br />
-                        日本,120<br />
-                        見る,180<br />
-                        食べる,350
-                      </div>
-                      <p className="text-[11px] text-teal-700 dark:text-teal-300">
-                        Matches by kanji form and reading, overriding priority-tag frequency bands.
-                      </p>
-                    </div>
-                  )}
-
-                  <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
-                    ✓ Multiple packs coexist and merge by upsert; never deletes existing packs.
-                  </p>
-
-                  <label className="inline-block px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl cursor-pointer transition shadow-sm">
-                    {selectedKind === 'kanji-levels' ? 'Browse Kanji CSV(s)' : 'Browse Local File'}
-                    <input
-                      type="file"
-                      accept=".csv,.tsv,.json,.gz,.zip,.txt"
-                      multiple={selectedKind === 'kanji-levels'}
-                      onChange={handleFileUpload}
-                      className="hidden"
-                    />
-                  </label>
-                </div>
+                )}
               </div>
             )}
 
@@ -2128,7 +2462,9 @@ export const LanguagePacksView: React.FC = () => {
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-500 dark:text-slate-400">Total Entries Parsed:</span>
+                  <span className="text-slate-500 dark:text-slate-400">
+                    {importSummary.kind === 'kanji-levels' ? 'Characters Imported:' : 'Total Entries Parsed:'}
+                  </span>
                   <span className="font-bold font-mono text-slate-900 dark:text-white">
                     {importSummary.count.toLocaleString()}
                   </span>

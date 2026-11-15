@@ -2,6 +2,12 @@ import Dexie from 'dexie';
 import JSZip from 'jszip';
 import { deriveFrequencyInfo, deriveBandFromRank } from './jmdictFrequency';
 import { computeFingerprint } from '../fingerprint';
+import {
+  parseKanjiListTable,
+  resolveRowJlptLevel,
+  isEasierLevel,
+  SINGLE_KANJI_REGEX,
+} from './kanjiListParser';
 import type { JmdictEntryItem, DictionaryMetaItem, ImportRecord, ImportKind, KanjiEntryItem } from '../../db/db';
 
 // Worker DB connection matching LinguaForgeDatabase v6
@@ -46,9 +52,8 @@ class WorkerLinguaForgeDB extends Dexie {
 let isCancelled = false;
 let hasNonEnglishFound = false;
 
-// CSV Parser handling quotes, delimiters, BOM, and NFC normalization
+// CSV Parser for vocabulary JLPT/frequency overlays (kanji-levels uses parseKanjiListTable)
 function parseCsvRows(text: string): { headers: string[]; rows: string[][] } {
-  // Strip UTF-8 BOM if present
   const cleanText = text.replace(/^\uFEFF/, '');
   const rawLines = cleanText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   if (rawLines.length === 0) return { headers: [], rows: [] };
@@ -107,39 +112,6 @@ function parseCsvRows(text: string): { headers: string[]; rows: string[][] } {
     return { headers: first, rows: parsedLines.slice(1) };
   }
   return { headers: [], rows: parsedLines };
-}
-
-function inferLevelFromFileName(fileName: string): string | null {
-  const lower = fileName.toLowerCase();
-  const m = lower.match(/\b(n[1-5])\b|jlpt[-_ ]?([1-5])|[-_ ](n[1-5])[-_ .]/i);
-  if (m) {
-    const raw = m[1] || m[2] || m[3];
-    return raw.toUpperCase().startsWith('N') ? raw.toUpperCase() : `N${raw}`;
-  }
-  if (lower.includes('n5')) return 'N5';
-  if (lower.includes('n4')) return 'N4';
-  if (lower.includes('n3')) return 'N3';
-  if (lower.includes('n2')) return 'N2';
-  if (lower.includes('n1')) return 'N1';
-  return null;
-}
-
-function cleanJlptLevel(raw: string, fallbackLevel: string | null = null): string {
-  let cleaned = (raw || '').trim().toUpperCase();
-  if (/^[1-5]$/.test(cleaned)) cleaned = `N${cleaned}`;
-  if (/^JLPTN?[1-5]$/.test(cleaned)) cleaned = `N${cleaned.slice(-1)}`;
-  if (/^N[1-5]$/.test(cleaned)) return cleaned;
-  if (fallbackLevel && /^N[1-5]$/.test(fallbackLevel)) return fallbackLevel;
-  return 'No level';
-}
-
-function isEasierLevel(candidateLevel: string, existingLevel: string): boolean {
-  const cNum = parseInt(candidateLevel.replace(/\D/g, ''), 10);
-  const eNum = parseInt(existingLevel.replace(/\D/g, ''), 10);
-  if (!eNum || isNaN(eNum)) return true;
-  if (!cNum || isNaN(cNum)) return false;
-  // N5 (5) > N4 (4) -> higher number is easier
-  return cNum > eNum;
 }
 
 // Convert raw buffer or string to JSON text, handling .zip and .gz
@@ -310,8 +282,11 @@ self.addEventListener('message', async (e: MessageEvent) => {
         }
         effectiveFileName = fileName || url.split('?')[0].split('/').pop() || 'dictionary.json';
         rawData = await response.arrayBuffer();
+      } else if (source === 'files' && Array.isArray(files) && files.length > 0) {
+        rawData = files.map((f: any) => `${f.fileName || f.name || ''}\n${typeof f.data === 'string' ? f.data : f.text || ''}`).join('\n---\n');
+        effectiveFileName = fileName || files[0].fileName || files[0].name || 'kanji-files';
       } else {
-        rawData = fileData;
+        rawData = fileData ?? '';
       }
 
       // Compute content fingerprint (SHA-256 of first 1MB + last 1MB + size)
@@ -320,11 +295,18 @@ self.addEventListener('message', async (e: MessageEvent) => {
       const fingerprint = await computeFingerprint(rawBytes);
 
       self.postMessage({ type: 'status', message: 'Decompressing & reading data...' });
-      const { text, sizeBytes } = await extractJsonText(rawData, effectiveFileName);
+      const { text, sizeBytes } =
+        source === 'files' && Array.isArray(files)
+          ? {
+              text: '',
+              sizeBytes: files.reduce((acc: number, f: any) => acc + (f.size || (f.text || '').length), 0),
+            }
+          : await extractJsonText(rawData, effectiveFileName);
 
-      // Parse JSON or detect CSV
+      // Parse JSON or detect CSV/TSV
       let parsed: any = null;
-      let isCsv = effectiveFileName.toLowerCase().endsWith('.csv');
+      const lowerEffective = effectiveFileName.toLowerCase();
+      let isCsv = lowerEffective.endsWith('.csv') || lowerEffective.endsWith('.tsv');
       const trimmed = text.trim();
       if (!isCsv && (trimmed.startsWith('{') || trimmed.startsWith('['))) {
         try {
@@ -476,79 +458,32 @@ self.addEventListener('message', async (e: MessageEvent) => {
 
         for (const fileObj of filesToProcess) {
           const fName = fileObj.fileName;
-          const inferredLevel = inferLevelFromFileName(fName);
-          const { headers, rows } = parseCsvRows(fileObj.text);
+          const parsedTable = parseKanjiListTable(fileObj.text, fName);
+          const inferredLevel = parsedTable.inferredLevel;
+          const rows = parsedTable.rows;
 
           const mapping = fileObj.mapping || {};
-          let charIdx = mapping.charCol ?? mapping.kanjiCol ?? -1;
-          let lvlIdx = mapping.levelCol ?? mapping.jlptCol ?? -1;
-          let readingIdx = mapping.readingCol ?? mapping.kanaCol ?? -1;
-          let onIdx = mapping.onCol ?? -1;
-          let kunIdx = mapping.kunCol ?? -1;
-          let meaningIdx = mapping.meaningCol ?? mapping.glossCol ?? -1;
-          let strokeIdx = mapping.strokeCol ?? -1;
+          const detected = parsedTable.detectedMapping;
 
-          // Auto-detect columns from headers if not explicitly specified
-          if (charIdx === -1) {
-            charIdx = headers.findIndex((h) =>
-              h.includes('kanji') || h.includes('char') || h.includes('character') || h === 'word' || h === 'expression'
-            );
-          }
-          if (lvlIdx === -1) {
-            lvlIdx = headers.findIndex((h) => h.includes('level') || h.includes('jlpt') || h.includes('grade'));
-          }
-          if (readingIdx === -1) {
-            readingIdx = headers.findIndex((h) => h.includes('reading') || h.includes('kana') || h.includes('yomi'));
-          }
-          if (onIdx === -1) {
-            onIdx = headers.findIndex((h) => h.includes('on') || h.includes('onyomi'));
-          }
-          if (kunIdx === -1) {
-            kunIdx = headers.findIndex((h) => h.includes('kun') || h.includes('kunyomi'));
-          }
-          if (meaningIdx === -1) {
-            meaningIdx = headers.findIndex((h) =>
-              h.includes('mean') || h.includes('definition') || h.includes('english') || h.includes('gloss')
-            );
-          }
-          if (strokeIdx === -1) {
-            strokeIdx = headers.findIndex((h) => h.includes('stroke') || h.includes('strokes'));
-          }
-
-          // If still -1, inspect rows for single kanji column
-          if (charIdx === -1 && rows.length > 0) {
-            const sampleRows = rows.slice(0, 5);
-            for (let c = 0; c < (sampleRows[0]?.length || 0); c++) {
-              if (sampleRows.every((r) => r[c] && /^[\u4e00-\u9faf\u3400-\u4dbf々〆〇]$/.test(r[c].trim()))) {
-                charIdx = c;
-                break;
-              }
-            }
-            if (charIdx === -1) charIdx = 0;
-          }
-
-          // If lvlIdx still -1, inspect rows for N1-N5 or 1-5 level column
-          if (lvlIdx === -1 && rows.length > 0) {
-            const sampleRows = rows.slice(0, 5);
-            for (let c = 0; c < (sampleRows[0]?.length || 0); c++) {
-              if (c !== charIdx && sampleRows.some((r) => r[c] && /^N?[1-5]$/i.test(r[c].trim()))) {
-                lvlIdx = c;
-                break;
-              }
-            }
-          }
+          const charIdx = mapping.charCol !== undefined ? mapping.charCol : (mapping.kanjiCol !== undefined ? mapping.kanjiCol : detected.charCol);
+          const lvlIdx = mapping.levelCol !== undefined ? mapping.levelCol : (mapping.jlptCol !== undefined ? mapping.jlptCol : detected.levelCol);
+          const readingIdx = mapping.readingCol !== undefined ? mapping.readingCol : (mapping.kanaCol !== undefined ? mapping.kanaCol : detected.readingCol);
+          const onIdx = mapping.onCol !== undefined ? mapping.onCol : detected.onCol;
+          const kunIdx = mapping.kunCol !== undefined ? mapping.kunCol : detected.kunCol;
+          const meaningIdx = mapping.meaningCol !== undefined ? mapping.meaningCol : (mapping.glossCol !== undefined ? mapping.glossCol : detected.meaningCol);
+          const strokeIdx = mapping.strokeCol !== undefined ? mapping.strokeCol : detected.strokeCol;
 
           for (const row of rows) {
-            const rawChar = (row[charIdx] || '').normalize('NFC').trim();
+            const rawChar = charIdx >= 0 ? (row[charIdx] || '').normalize('NFC').trim() : '';
             // Validate single kanji ideograph
-            if (!rawChar || !/^[\u4e00-\u9faf\u3400-\u4dbf々〆〇]$/.test(rawChar)) {
+            if (!rawChar || !SINGLE_KANJI_REGEX.test(rawChar)) {
               skippedCount++;
               continue;
             }
 
-            // Extract level
-            const rawLvl = lvlIdx !== -1 ? row[lvlIdx] : '';
-            const lvl = cleanJlptLevel(rawLvl, inferredLevel);
+            // Extract level (supports N5, n5, 5, "level 5"; ignores values outside 1-5; falls back to filename when missing)
+            const rawLvl = lvlIdx >= 0 ? row[lvlIdx] : '';
+            const lvl = resolveRowJlptLevel(rawLvl, inferredLevel);
 
             // Extract readings
             const onReadings: string[] = [];
