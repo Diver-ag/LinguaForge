@@ -32,6 +32,7 @@ import {
   FileJson,
   Loader2,
   Cpu,
+  Info,
 } from 'lucide-react';
 
 export const SettingsView: React.FC = () => {
@@ -195,11 +196,14 @@ export const SettingsView: React.FC = () => {
   };
 
   const handleClearAllData = async () => {
-    if (confirm('Warning: This will clear all documents, lookups, and statuses in your local IndexedDB. Are you sure?')) {
+    if (confirm('Warning: This will clear all documents, cards, decks, lookups, and statuses in your local IndexedDB. Are you sure?')) {
       await db.documents.clear();
       await db.lookups.clear();
       await db.wordStatuses.clear();
       await db.flashcards.clear();
+      await db.cards.clear();
+      await db.decks.clear();
+      await db.reviewLogs.clear();
       await db.eventLogs.clear();
       alert('All local database tables cleared.');
       window.location.reload();
@@ -741,6 +745,46 @@ export const SettingsView: React.FC = () => {
           >
             Clear All IndexedDB Tables
           </button>
+        </div>
+
+        {/* About */}
+        <div className="p-6 rounded-3xl bg-[var(--surface)] border border-[var(--border)] shadow-xs space-y-4">
+          <div className="space-y-1">
+            <h2 className="font-bold text-base text-[var(--text)] flex items-center gap-2">
+              <Info className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+              About
+            </h2>
+            <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+              Running build details for LinguaForge PWA. App updates download in the background and wait for you to click Reload without clearing stored data.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+            <div className="p-3.5 rounded-2xl bg-[var(--surface-muted)] border border-[var(--border)] space-y-1">
+              <span className="text-[11px] font-semibold text-[var(--text-muted)] block">
+                App Version
+              </span>
+              <span className="font-mono font-bold text-sm text-[var(--text)]">
+                v{typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0'}
+              </span>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-[var(--surface-muted)] border border-[var(--border)] space-y-1">
+              <span className="text-[11px] font-semibold text-[var(--text-muted)] block">
+                Build Date
+              </span>
+              <span className="font-mono font-bold text-sm text-[var(--text)] block">
+                {typeof __BUILD_DATE__ !== 'undefined'
+                  ? new Date(__BUILD_DATE__).toLocaleString()
+                  : 'Unknown'}
+              </span>
+              {typeof __BUILD_DATE__ !== 'undefined' && (
+                <span className="font-mono text-[10px] text-[var(--text-muted)] block">
+                  {__BUILD_DATE__}
+                </span>
+              )}
+            </div>
+          </div>
         </div>
       </main>
     </div>

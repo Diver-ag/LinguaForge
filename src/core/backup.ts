@@ -1,4 +1,5 @@
-import { db } from '../db/db';
+import { db, type CardItem, type FlashcardItem } from '../db/db';
+import { ensureAllDefaultDecks, ensureDefaultDeck } from '../db/cards';
 import { logEvent } from './eventLogger';
 
 export interface LinguaForgeBackupData {
@@ -10,19 +11,37 @@ export interface LinguaForgeBackupData {
   lookups: any[];
   settings: any[];
   flashcards: any[];
+  decks?: any[];
+  cards?: any[];
+  reviewLogs?: any[];
   eventLogs: any[];
 }
 
 export async function exportFullBackup(): Promise<string> {
-  const documents = await db.documents.toArray();
-  const wordStatuses = await db.wordStatuses.toArray();
-  const lookups = await db.lookups.toArray();
-  const settings = await db.settings.toArray();
-  const flashcards = await db.flashcards.toArray();
-  const eventLogs = await db.eventLogs.toArray();
+  const [
+    documents,
+    wordStatuses,
+    lookups,
+    settings,
+    flashcards,
+    decks,
+    cards,
+    reviewLogs,
+    eventLogs,
+  ] = await Promise.all([
+    db.documents.toArray(),
+    db.wordStatuses.toArray(),
+    db.lookups.toArray(),
+    db.settings.toArray(),
+    db.flashcards.toArray(),
+    db.decks.toArray(),
+    db.cards.toArray(),
+    db.reviewLogs.toArray(),
+    db.eventLogs.toArray(),
+  ]);
 
   const backup: LinguaForgeBackupData = {
-    version: 1,
+    version: 2,
     appName: 'LinguaForge',
     exportedAt: new Date().toISOString(),
     documents,
@@ -30,6 +49,9 @@ export async function exportFullBackup(): Promise<string> {
     lookups,
     settings,
     flashcards,
+    decks,
+    cards,
+    reviewLogs,
     eventLogs,
   };
 
@@ -37,6 +59,8 @@ export async function exportFullBackup(): Promise<string> {
     docCount: documents.length,
     wordsCount: wordStatuses.length,
     lookupsCount: lookups.length,
+    cardsCount: cards.length,
+    decksCount: decks.length,
   });
 
   return JSON.stringify(backup, null, 2);
@@ -62,37 +86,112 @@ export async function restoreFromBackup(jsonData: string): Promise<{ success: bo
       return { success: false, message: 'Invalid backup file: missing LinguaForge signature.' };
     }
 
-    await db.transaction('rw', [db.documents, db.wordStatuses, db.lookups, db.settings, db.flashcards], async () => {
-      if (Array.isArray(data.documents) && data.documents.length > 0) {
-        await db.documents.clear();
-        await db.documents.bulkAdd(data.documents);
+    await db.transaction(
+      'rw',
+      [
+        db.documents,
+        db.wordStatuses,
+        db.lookups,
+        db.settings,
+        db.flashcards,
+        db.decks,
+        db.cards,
+        db.reviewLogs,
+      ],
+      async () => {
+        if (Array.isArray(data.documents)) {
+          await db.documents.clear();
+          if (data.documents.length > 0) await db.documents.bulkPut(data.documents);
+        }
+        if (Array.isArray(data.wordStatuses)) {
+          await db.wordStatuses.clear();
+          if (data.wordStatuses.length > 0) await db.wordStatuses.bulkPut(data.wordStatuses);
+        }
+        if (Array.isArray(data.lookups)) {
+          await db.lookups.clear();
+          if (data.lookups.length > 0) await db.lookups.bulkPut(data.lookups);
+        }
+        if (Array.isArray(data.settings)) {
+          await db.settings.clear();
+          if (data.settings.length > 0) await db.settings.bulkPut(data.settings);
+        }
+        if (Array.isArray(data.flashcards)) {
+          await db.flashcards.clear();
+          if (data.flashcards.length > 0) await db.flashcards.bulkPut(data.flashcards);
+        }
+
+        // Restore v2 card/deck/reviewLog tables when present
+        if (Array.isArray(data.decks)) {
+          await db.decks.clear();
+          if (data.decks.length > 0) await db.decks.bulkPut(data.decks);
+        }
+        if (Array.isArray(data.cards)) {
+          await db.cards.clear();
+          if (data.cards.length > 0) await db.cards.bulkPut(data.cards);
+        } else if (Array.isArray(data.flashcards) && data.flashcards.length > 0) {
+          // Legacy v1 backup compatibility: map flashcards into cards + default decks
+          const migrated: CardItem[] = (data.flashcards as FlashcardItem[]).map((fc, idx) => {
+            const langId = fc.languageId || 'ja';
+            const created = fc.createdAt || Date.now();
+            return {
+              id: fc.id !== undefined ? `card-legacy-${fc.id}` : `card-legacy-${created}-${idx}`,
+              deckId: `default-${langId}`,
+              languageId: langId,
+              cardType: 'word_to_meaning',
+              word: fc.word || '',
+              lemma: fc.lemma || fc.word || '',
+              reading: fc.reading || '',
+              furiganaSegments: fc.furiganaSegments,
+              meaning: fc.meaning || '',
+              partOfSpeech: '',
+              level: fc.level || '',
+              frequencyBand: '',
+              sentence: fc.sentence || '',
+              sentenceFuriganaSegments: fc.sentenceFuriganaSegments,
+              sourceDocTitle: fc.sourceDocTitle || '',
+              tags: [],
+              notes: '',
+              createdAt: created,
+              updatedAt: created,
+              suspended: false,
+              buried: false,
+            };
+          });
+          await db.cards.clear();
+          await db.cards.bulkPut(migrated);
+        }
+
+        if (Array.isArray(data.reviewLogs)) {
+          await db.reviewLogs.clear();
+          if (data.reviewLogs.length > 0) await db.reviewLogs.bulkPut(data.reviewLogs);
+        }
       }
-      if (Array.isArray(data.wordStatuses) && data.wordStatuses.length > 0) {
-        await db.wordStatuses.clear();
-        await db.wordStatuses.bulkAdd(data.wordStatuses);
+    );
+
+    // Guarantee default decks exist after restore
+    await ensureAllDefaultDecks();
+    if (Array.isArray(data.cards)) {
+      const langs = new Set<string>(data.cards.map((c: any) => c.languageId).filter(Boolean));
+      for (const l of langs) {
+        await ensureDefaultDeck(l);
       }
-      if (Array.isArray(data.lookups) && data.lookups.length > 0) {
-        await db.lookups.clear();
-        await db.lookups.bulkAdd(data.lookups);
-      }
-      if (Array.isArray(data.settings) && data.settings.length > 0) {
-        await db.settings.clear();
-        await db.settings.bulkAdd(data.settings);
-      }
-      if (Array.isArray(data.flashcards) && data.flashcards.length > 0) {
-        await db.flashcards.clear();
-        await db.flashcards.bulkAdd(data.flashcards);
-      }
-    });
+    }
 
     await logEvent('backup_restored', {
       exportedAt: data.exportedAt,
       docsRestored: data.documents?.length || 0,
+      cardsRestored: data.cards?.length || data.flashcards?.length || 0,
+      decksRestored: data.decks?.length || 0,
     });
+
+    const restoredCardsCount = Array.isArray(data.cards)
+      ? data.cards.length
+      : data.flashcards?.length || 0;
+    const restoredDecksCount = Array.isArray(data.decks) ? data.decks.length : 0;
 
     return {
       success: true,
-      message: `Successfully restored ${data.documents?.length || 0} documents, ${data.wordStatuses?.length || 0} word statuses, and ${data.lookups?.length || 0} lookups.`,
+      message: `Successfully restored ${data.documents?.length || 0} documents, ${restoredCardsCount} cards${restoredDecksCount ? `, ${restoredDecksCount} decks` : ''}, ${data.wordStatuses?.length || 0} word statuses, and ${data.lookups?.length || 0} lookups.`,
     };
   } catch (err: any) {
     return { success: false, message: `Backup restoration failed: ${err.message || String(err)}` };

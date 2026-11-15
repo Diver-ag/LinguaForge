@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom';
 import type { DictionaryEntry, LanguagePack, Token } from '../../core/languagePack';
 import { db, type WordStatusType } from '../../db/db';
+import { addCardsForWord } from '../../db/cards';
 import { getLanguagePack } from '../../packs/registry';
 import { useAppStore, type FuriganaMode, type FontSize } from '../../store/useAppStore';
 import { getTokenizerWarning } from '../../packs/japanese/tokenizer';
@@ -313,15 +314,16 @@ export const ReaderView: React.FC = () => {
   const handleAddPhraseCard = async () => {
     if (!selectedPhrase) return;
     try {
-      await db.flashcards.add({
+      await addCardsForWord({
+        languageId: activeLanguageId,
+        cardTypes: ['word_to_meaning'],
         word: selectedPhrase,
+        lemma: selectedPhrase,
         reading: '',
         meaning: 'Selected phrase',
-        languageId: activeLanguageId,
         sentence: selectionContextSentence,
         sourceDocTitle: activeDocument?.title,
-        status: 'new',
-        createdAt: Date.now(),
+        sourceDocId: activeDocument?.id,
       });
       setPhraseCardToast(true);
       setTimeout(() => {
@@ -633,6 +635,7 @@ export const ReaderView: React.FC = () => {
             entry={activeEntry}
             pack={pack}
             surroundingSentence={surroundingSentence}
+            documentId={activeDocument?.id}
             documentTitle={activeDocument?.title}
             isPinned={isPinned}
             onClose={handleClosePopup}

@@ -252,7 +252,7 @@ export const LanguagePacksView: React.FC = () => {
 
       // 6. User study data stats
       const [cards, lookups, docs, words] = await Promise.all([
-        db.flashcards.count(),
+        db.cards.count(),
         db.lookups.count(),
         db.documents.count(),
         db.wordStatuses.count(),

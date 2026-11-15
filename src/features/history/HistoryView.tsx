@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { db, type LookupItem, type FlashcardItem, type WordStatusType } from '../../db/db';
+import { db, type LookupItem, type CardItem, type WordStatusType } from '../../db/db';
 import { useAppStore } from '../../store/useAppStore';
 import { getLanguagePack } from '../../packs/registry';
 import { logEvent } from '../../core/eventLogger';
@@ -25,7 +25,7 @@ export const HistoryView: React.FC = () => {
 
   const [viewMode, setViewMode] = useState<'lookups' | 'flashcards'>('lookups');
   const [lookups, setLookups] = useState<LookupItem[]>([]);
-  const [flashcards, setFlashcards] = useState<FlashcardItem[]>([]);
+  const [flashcards, setFlashcards] = useState<CardItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'learning' | 'known' | 'new'>('all');
   const [sortBy, setSortBy] = useState<'recent' | 'count'>('recent');
@@ -36,7 +36,7 @@ export const HistoryView: React.FC = () => {
     try {
       const [lookupItems, cardItems] = await Promise.all([
         db.lookups.where('languageId').equals(activeLanguageId).toArray(),
-        db.flashcards.where('languageId').equals(activeLanguageId).toArray(),
+        db.cards.where('languageId').equals(activeLanguageId).toArray(),
       ]);
       setLookups(lookupItems);
       setFlashcards(cardItems);
@@ -57,8 +57,8 @@ export const HistoryView: React.FC = () => {
     await loadData();
   };
 
-  const handleDeleteCard = async (id: number) => {
-    await db.flashcards.delete(id);
+  const handleDeleteCard = async (id: string) => {
+    await db.cards.delete(id);
     await logEvent('flashcard_deleted', { cardId: id });
     await loadData();
   };
@@ -136,7 +136,7 @@ export const HistoryView: React.FC = () => {
 
     if (!matchesSearch) return false;
 
-    const currentStatus = wordStatuses[card.word] || card.status || 'new';
+    const currentStatus = wordStatuses[card.word] || 'new';
     if (statusFilter !== 'all' && currentStatus !== statusFilter) return false;
 
     return true;
@@ -382,7 +382,7 @@ export const HistoryView: React.FC = () => {
           ) : (
             <div className="space-y-3">
               {filteredFlashcards.map((card) => {
-                const currentStatus: WordStatusType = wordStatuses[card.word] || card.status || 'new';
+                const currentStatus: WordStatusType = wordStatuses[card.word] || 'new';
 
                 return (
                   <div
@@ -420,7 +420,6 @@ export const HistoryView: React.FC = () => {
                             onClick={async () => {
                               const next = currentStatus === 'known' ? 'learning' : 'known';
                               await setWordStatus(card.word, next);
-                              await db.flashcards.update(card.id!, { status: next === 'known' ? 'mastered' : 'learning' });
                               await loadData();
                             }}
                             className={`text-xs px-2 py-0.5 rounded-full font-semibold transition ${
@@ -442,7 +441,7 @@ export const HistoryView: React.FC = () => {
 
                       <div className="flex items-center gap-2 shrink-0">
                         <button
-                          onClick={() => handleDeleteCard(card.id!)}
+                          onClick={() => handleDeleteCard(card.id)}
                           className="p-1 rounded-lg text-[var(--text-muted)] hover:text-rose-600 transition"
                           title="Delete card"
                         >

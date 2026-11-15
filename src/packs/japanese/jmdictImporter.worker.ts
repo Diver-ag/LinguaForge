@@ -46,6 +46,12 @@ class WorkerLinguaForgeDB extends Dexie {
     this.version(6).stores({
       kanjiEntries: 'character, jlptLevel, *importIds',
     });
+    this.version(7).stores({
+      decks: 'id, languageId, name, createdAt',
+      cards:
+        'id, deckId, languageId, cardType, word, lemma, [lemma+reading+cardType], [languageId+deckId], level, sourceDocId, *tags, suspended, buried, createdAt, updatedAt',
+      reviewLogs: 'id, cardId, reviewedAt, state',
+    });
   }
 }
 

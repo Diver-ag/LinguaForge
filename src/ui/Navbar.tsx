@@ -15,6 +15,7 @@ import {
   Sparkles,
   Wifi,
   WifiOff,
+  Layers,
 } from 'lucide-react';
 
 export const Navbar: React.FC = () => {
@@ -38,6 +39,7 @@ export const Navbar: React.FC = () => {
   const navItems = [
     { to: '/library', label: 'Library', icon: FolderOpen },
     { to: '/reader', label: 'Reader', icon: BookOpen },
+    { to: '/cards', label: 'Cards', icon: Layers },
     { to: '/history', label: 'History', icon: History },
     { to: '/packs', label: 'Packs', icon: Package },
     { to: '/settings', label: 'Settings', icon: Settings },
@@ -159,7 +161,7 @@ export const Navbar: React.FC = () => {
             <NavLink
               key={item.to}
               to={item.to}
-              className={`flex flex-col items-center py-1 px-3 rounded-xl transition text-[11px] font-bold ${
+              className={`flex flex-col items-center py-1 px-2 rounded-xl transition text-[10px] sm:text-[11px] font-bold whitespace-nowrap ${
                 isActive
                   ? 'text-[var(--accent-text)]'
                   : 'text-[var(--text-muted)] hover:text-[var(--text)]'

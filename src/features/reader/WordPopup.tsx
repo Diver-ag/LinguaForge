@@ -1,7 +1,14 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { DictionaryEntry, LanguagePack, Token, KanjiDetail } from '../../core/languagePack';
-import { db, type WordStatusType } from '../../db/db';
+import { type CardType, type WordStatusType } from '../../db/db';
+import {
+  addCardsForWord,
+  findDuplicateCard,
+  getDecksWithCounts,
+  getDefaultDeckId,
+  type DeckWithCount,
+} from '../../db/cards';
 import { useAppStore } from '../../store/useAppStore';
 import {
   Volume2,
@@ -90,6 +97,7 @@ interface WordPopupProps {
   entry: DictionaryEntry | null;
   pack: LanguagePack;
   surroundingSentence?: string;
+  documentId?: number;
   documentTitle?: string;
   isPinned?: boolean;
   onClose: () => void;
@@ -103,6 +111,7 @@ export const WordPopup: React.FC<WordPopupProps> = ({
   entry,
   pack,
   surroundingSentence,
+  documentId,
   documentTitle,
   isPinned,
   onClose,
@@ -113,7 +122,12 @@ export const WordPopup: React.FC<WordPopupProps> = ({
   const navigate = useNavigate();
   const { wordStatuses, setWordStatus } = useAppStore();
   const [activeTab, setActiveTab] = useState<'meanings' | 'grammar' | 'kanji' | 'examples'>('meanings');
-  const [addedToCards, setAddedToCards] = useState(false);
+  const [addedFeedback, setAddedFeedback] = useState<{ type: 'added' | 'duplicate' | 'partial'; text: string } | null>(null);
+  const [decks, setDecks] = useState<DeckWithCount[]>([]);
+  const [selectedDeckId, setSelectedDeckId] = useState<string>(getDefaultDeckId(pack.id));
+  const [selectedCardTypes, setSelectedCardTypes] = useState<CardType[]>(['word_to_meaning']);
+  const [existingCardTypes, setExistingCardTypes] = useState<Set<CardType>>(new Set());
+  const [isAddingCards, setIsAddingCards] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [selectedEntryIndex, setSelectedEntryIndex] = useState(0);
   const [sourceFilter, setSourceFilter] = useState<'all' | 'words' | 'names' | 'kanji' | 'examples'>('all');
@@ -214,6 +228,70 @@ export const WordPopup: React.FC<WordPopupProps> = ({
   const components = token.components || entry?.grammarComponents || [];
   const hasGrammarBreakdown = components.length > 1;
 
+  const validReadingPrimary =
+    validReadings[0] ||
+    (token.reading &&
+    token.reading !== token.surface &&
+    !/[\u4e00-\u9faf\u3400-\u4dbf々〆〇]/.test(token.reading)
+      ? token.reading
+      : '');
+
+  // Load decks for active language
+  useEffect(() => {
+    let cancelled = false;
+    getDecksWithCounts(pack.id)
+      .then((list) => {
+        if (cancelled) return;
+        setDecks(list);
+        const defId = getDefaultDeckId(pack.id);
+        setSelectedDeckId((prev) =>
+          list.some((d) => d.id === prev) ? prev : list.some((d) => d.id === defId) ? defId : list[0]?.id || defId
+        );
+      })
+      .catch(console.warn);
+    return () => {
+      cancelled = true;
+    };
+  }, [pack.id]);
+
+  // Check for existing duplicate cards for (lemma, reading, cardType)
+  useEffect(() => {
+    let cancelled = false;
+    setAddedFeedback(null);
+    const checkDuplicates = async () => {
+      const types: CardType[] = ['word_to_meaning', 'meaning_to_word', 'reading'];
+      const found = new Set<CardType>();
+      await Promise.all(
+        types.map(async (t) => {
+          const match = await findDuplicateCard({
+            languageId: pack.id,
+            lemma: lemma.trim(),
+            reading: validReadingPrimary.trim(),
+            cardType: t,
+          });
+          if (match) found.add(t);
+        })
+      );
+      if (!cancelled) {
+        setExistingCardTypes(found);
+      }
+    };
+    checkDuplicates().catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [pack.id, lemma, validReadingPrimary]);
+
+  const toggleCardType = (type: CardType) => {
+    setAddedFeedback(null);
+    setSelectedCardTypes((prev) =>
+      prev.includes(type) ? prev.filter((t) => t !== type) : [...prev, type]
+    );
+  };
+
+  const allSelectedAreDuplicates =
+    selectedCardTypes.length > 0 && selectedCardTypes.every((t) => existingCardTypes.has(t));
+
   const handleSpeak = (textToSpeak: string) => {
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
@@ -233,15 +311,9 @@ export const WordPopup: React.FC<WordPopupProps> = ({
   };
 
   const handleAddToFlashcards = async () => {
+    if (selectedCardTypes.length === 0 || isAddingCards) return;
+    setIsAddingCards(true);
     try {
-      const validReading =
-        validReadings[0] ||
-        (token.reading &&
-        token.reading !== token.surface &&
-        !/[\u4e00-\u9faf\u3400-\u4dbf々〆〇]/.test(token.reading)
-          ? token.reading
-          : '');
-
       let sentenceFurigana: any = undefined;
       if (surroundingSentence) {
         try {
@@ -252,24 +324,46 @@ export const WordPopup: React.FC<WordPopupProps> = ({
         }
       }
 
-      await db.flashcards.add({
+      const { added, duplicateTypes } = await addCardsForWord({
+        deckId: selectedDeckId,
+        languageId: pack.id,
+        cardTypes: selectedCardTypes,
         word: token.surface,
         lemma,
-        reading: validReading,
+        reading: validReadingPrimary,
         furiganaSegments: token.furiganaSegments,
-        sentence: surroundingSentence,
-        sentenceFuriganaSegments: sentenceFurigana,
         meaning: meanings.join('; ') || 'Definition from reader',
-        languageId: pack.id,
-        sourceDocTitle: documentTitle,
-        level,
-        status: 'new',
-        createdAt: Date.now(),
+        partOfSpeech: pos,
+        level: level || '',
+        frequencyBand: effectiveFrequencyBand || '',
+        sentence: surroundingSentence || '',
+        sentenceFuriganaSegments: sentenceFurigana,
+        sourceDocTitle: documentTitle || '',
+        sourceDocId: documentId,
       });
-      setAddedToCards(true);
-      setTimeout(() => setAddedToCards(false), 3000);
+
+      const nextExisting = new Set(existingCardTypes);
+      for (const c of added) nextExisting.add(c.cardType);
+      for (const d of duplicateTypes) nextExisting.add(d);
+      setExistingCardTypes(nextExisting);
+
+      if (added.length === 0 && duplicateTypes.length > 0) {
+        setAddedFeedback({ type: 'duplicate', text: 'Already in your cards' });
+      } else if (added.length > 0 && duplicateTypes.length > 0) {
+        setAddedFeedback({
+          type: 'partial',
+          text: `Added ${added.length} (${duplicateTypes.length} already in your cards)`,
+        });
+      } else {
+        setAddedFeedback({
+          type: 'added',
+          text: added.length > 1 ? `Added ${added.length} cards!` : 'Added!',
+        });
+      }
     } catch (err) {
-      console.error('Failed to add flashcard:', err);
+      console.error('Failed to add card:', err);
+    } finally {
+      setIsAddingCards(false);
     }
   };
 
@@ -802,8 +896,74 @@ export const WordPopup: React.FC<WordPopupProps> = ({
         )}
       </div>
 
+      {/* Add to Cards options strip */}
+      <div className="px-3 py-2 bg-[var(--surface-muted)]/60 border-t border-[var(--border)] space-y-2 text-[11px]">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="font-semibold text-[var(--text-muted)] shrink-0">Deck:</span>
+            <select
+              value={selectedDeckId}
+              onChange={(e) => setSelectedDeckId(e.target.value)}
+              aria-label="Target deck"
+              className="px-2 py-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] text-[11px] font-medium max-w-[160px] truncate focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              {decks.length === 0 ? (
+                <option value={getDefaultDeckId(pack.id)}>Default</option>
+              ) : (
+                decks.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name} ({d.cardCount})
+                  </option>
+                ))
+              )}
+            </select>
+          </div>
+
+          {(addedFeedback?.type === 'duplicate' || (!addedFeedback && allSelectedAreDuplicates)) && (
+            <span className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+              Already in your cards
+            </span>
+          )}
+          {addedFeedback && addedFeedback.type !== 'duplicate' && (
+            <span className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+              {addedFeedback.text}
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-3 flex-wrap">
+          {(
+            [
+              { id: 'word_to_meaning', label: 'Word → Meaning' },
+              { id: 'meaning_to_word', label: 'Meaning → Word' },
+              { id: 'reading', label: 'Reading' },
+            ] as { id: CardType; label: string }[]
+          ).map((ct) => {
+            const checked = selectedCardTypes.includes(ct.id);
+            const alreadyExists = existingCardTypes.has(ct.id);
+            return (
+              <label
+                key={ct.id}
+                className="inline-flex items-center gap-1 cursor-pointer select-none text-[11px] text-[var(--text-secondary)]"
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggleCardType(ct.id)}
+                  className="rounded border-[var(--border)] text-indigo-600 focus:ring-indigo-500"
+                />
+                <span className={alreadyExists ? 'opacity-65' : ''}>
+                  {ct.label}
+                  {alreadyExists ? ' ✓' : ''}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Action Footer */}
-      <div className="p-3 bg-slate-50 dark:bg-slate-900/80 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2 flex-wrap">
+      <div className="p-3 bg-[var(--surface-muted)] border-t border-[var(--border)] flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-1.5">
           <button
             onClick={() => handleSetStatus(currentStatus === 'known' ? 'learning' : 'known')}
@@ -842,15 +1002,23 @@ export const WordPopup: React.FC<WordPopupProps> = ({
 
         <button
           onClick={handleAddToFlashcards}
-          disabled={addedToCards}
+          disabled={isAddingCards || selectedCardTypes.length === 0}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-            addedToCards
-              ? 'bg-emerald-500 text-white cursor-default'
-              : 'bg-indigo-600 text-white hover:bg-indigo-700 active:scale-95 shadow-xs'
+            addedFeedback?.type === 'added'
+              ? 'bg-emerald-600 text-white'
+              : allSelectedAreDuplicates
+              ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300 border border-amber-300 dark:border-amber-800 hover:bg-amber-200/70'
+              : 'bg-indigo-600 text-white hover:bg-indigo-700 active:scale-95 shadow-xs disabled:opacity-50'
           }`}
         >
           <BookmarkPlus className="w-3.5 h-3.5" />
-          {addedToCards ? 'Added!' : 'Add to Cards'}
+          {isAddingCards
+            ? 'Adding...'
+            : addedFeedback?.type === 'added'
+            ? addedFeedback.text
+            : allSelectedAreDuplicates
+            ? 'Already in your cards'
+            : 'Add to Cards'}
         </button>
       </div>
     </div>

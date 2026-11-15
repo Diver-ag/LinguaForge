@@ -112,3 +112,35 @@ export function buildFurigana(
 
   return fallbackSegments;
 }
+
+/**
+ * Converts furiganaSegments to Anki's furigana format (`漢字[かんじ]`, with a space
+ * before each kanji group that has a reading when preceded by non-whitespace characters).
+ */
+export function furiganaSegmentsToAnki(
+  segments?: FuriganaSegment[],
+  fallbackText = ''
+): string {
+  if (!segments || segments.length === 0) {
+    return fallbackText || '';
+  }
+
+  let result = '';
+  for (const seg of segments) {
+    const text = seg.text || '';
+    if (!text) continue;
+    const ruby = seg.ruby?.trim();
+
+    if (ruby && ruby !== text) {
+      if (result.length > 0 && !/\s$/.test(result)) {
+        result += ' ';
+      }
+      result += `${text}[${ruby}]`;
+    } else {
+      result += text;
+    }
+  }
+
+  return result;
+}
+

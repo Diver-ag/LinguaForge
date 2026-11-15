@@ -3,13 +3,16 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAppStore } from './store/useAppStore';
 import { Navbar } from './ui/Navbar';
 import { OfflineIndicator } from './ui/OfflineIndicator';
+import { PWAUpdateBanner } from './ui/PWAUpdateBanner';
 import { ReaderView } from './features/reader/ReaderView';
 import { LibraryView } from './features/library/LibraryView';
 import { HistoryView } from './features/history/HistoryView';
 import { LanguagePacksView } from './features/packs/LanguagePacksView';
 import { SettingsView } from './features/settings/SettingsView';
+import { CardsView } from './features/cards/CardsView';
 
 import { backfillFlashcards } from './db/db';
+import { ensureAllDefaultDecks } from './db/cards';
 import { tokenizeJapanese } from './packs/japanese/tokenizer';
 
 export default function App() {
@@ -17,7 +20,8 @@ export default function App() {
 
   useEffect(() => {
     loadInitialSettings();
-    // One-time backfill for existing flashcards without readings or furigana
+    ensureAllDefaultDecks().catch(console.error);
+    // One-time backfill for existing cards without readings or furigana
     backfillFlashcards(tokenizeJapanese).catch(console.error);
   }, [loadInitialSettings]);
 
@@ -30,6 +34,7 @@ export default function App() {
             <Route path="/" element={<Navigate to="/library" replace />} />
             <Route path="/library" element={<LibraryView />} />
             <Route path="/reader" element={<ReaderView />} />
+            <Route path="/cards" element={<CardsView />} />
             <Route path="/history" element={<HistoryView />} />
             <Route path="/packs" element={<LanguagePacksView />} />
             <Route path="/settings" element={<SettingsView />} />
@@ -37,6 +42,7 @@ export default function App() {
           </Routes>
         </div>
         <OfflineIndicator />
+        <PWAUpdateBanner />
       </div>
     </BrowserRouter>
   );

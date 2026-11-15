@@ -51,6 +51,59 @@ export interface SettingItem {
   value: any;
 }
 
+export type CardType = 'word_to_meaning' | 'meaning_to_word' | 'reading';
+
+export interface DeckItem {
+  id: string;
+  name: string;
+  languageId: string;
+  createdAt: number;
+  description?: string;
+}
+
+export interface CardItem {
+  id: string;
+  deckId: string;
+  languageId: string;
+  cardType: CardType;
+  word: string;
+  lemma: string;
+  reading: string;
+  furiganaSegments?: { text: string; ruby?: string }[];
+  meaning: string;
+  partOfSpeech?: string;
+  level?: string;
+  frequencyBand?: string;
+  sentence?: string;
+  sentenceFuriganaSegments?: { text: string; ruby?: string }[];
+  sourceDocTitle?: string;
+  sourceDocId?: number;
+  tags: string[];
+  notes: string;
+  createdAt: number;
+  updatedAt: number;
+  suspended: boolean;
+  buried: boolean;
+  // Empty scheduling fields reserved for SRS phase
+  due?: number;
+  stability?: number;
+  difficulty?: number;
+  reps?: number;
+  lapses?: number;
+  state?: number;
+  lastReview?: number;
+}
+
+export interface ReviewLogItem {
+  id: string;
+  cardId: string;
+  rating: number;
+  reviewedAt: number;
+  elapsed: number;
+  scheduledDays: number;
+  state: number;
+}
+
 export interface FlashcardItem {
   id?: number;
   word: string;
@@ -69,14 +122,14 @@ export interface FlashcardItem {
 }
 
 /**
- * One-time backfill for existing flashcards without readings or furigana segments.
+ * One-time backfill for existing cards without readings or furigana segments.
  */
 export async function backfillFlashcards(
   tokenizeFn?: (text: string) => Promise<any[]>
 ): Promise<number> {
   let updatedCount = 0;
   try {
-    const cards = await db.flashcards.toArray();
+    const cards = await db.cards.toArray();
     for (const card of cards) {
       const needsReading =
         !card.reading ||
@@ -84,7 +137,7 @@ export async function backfillFlashcards(
         /[\u4e00-\u9faf\u3400-\u4dbf々〆〇]/.test(card.reading);
       const needsFurigana = !card.furiganaSegments || card.furiganaSegments.length === 0;
 
-      if ((needsReading || needsFurigana) && tokenizeFn) {
+      if ((needsReading || needsFurigana) && tokenizeFn && card.word) {
         const tokens = await tokenizeFn(card.word);
         const match = tokens.find((t) => t.isWord) || tokens[0];
         if (match) {
@@ -92,17 +145,18 @@ export async function backfillFlashcards(
             match.reading && !/[\u4e00-\u9faf\u3400-\u4dbf々〆〇]/.test(match.reading)
               ? match.reading
               : card.reading || '';
-          await db.flashcards.update(card.id!, {
+          await db.cards.update(card.id, {
             lemma: card.lemma || match.baseForm || card.word,
             reading: newReading,
             furiganaSegments: match.furiganaSegments || card.furiganaSegments,
+            updatedAt: Date.now(),
           });
           updatedCount++;
         }
       }
     }
   } catch (err) {
-    console.warn('Flashcard backfill failed:', err);
+    console.warn('Card backfill failed:', err);
   }
   return updatedCount;
 }
@@ -213,6 +267,9 @@ export class LinguaForgeDatabase extends Dexie {
   eventLogs!: Table<EventLogItem, number>;
   settings!: Table<SettingItem, string>;
   flashcards!: Table<FlashcardItem, number>;
+  decks!: Table<DeckItem, string>;
+  cards!: Table<CardItem, string>;
+  reviewLogs!: Table<ReviewLogItem, string>;
   downloadedAssets!: Table<DownloadedPackAsset, [string, string]>;
   jmdictEntries!: Table<JmdictEntryItem, string>;
   dictionaryMeta!: Table<DictionaryMetaItem, string>;
@@ -302,6 +359,79 @@ export class LinguaForgeDatabase extends Dexie {
     this.version(6).stores({
       kanjiEntries: 'character, jlptLevel, *importIds',
     });
+
+    this.version(7)
+      .stores({
+        decks: 'id, languageId, name, createdAt',
+        cards:
+          'id, deckId, languageId, cardType, word, lemma, [lemma+reading+cardType], [languageId+deckId], level, sourceDocId, *tags, suspended, buried, createdAt, updatedAt',
+        reviewLogs: 'id, cardId, reviewedAt, state',
+      })
+      .upgrade(async (trans) => {
+        const decksTable = trans.table('decks');
+        const cardsTable = trans.table('cards');
+        const flashcardsTable = trans.table('flashcards');
+
+        const existingFlashcards = (await flashcardsTable.toArray().catch(() => [])) as FlashcardItem[];
+        const langIds = new Set<string>(['ja', 'es']);
+        for (const fc of existingFlashcards) {
+          if (fc.languageId) langIds.add(fc.languageId);
+        }
+
+        const now = Date.now();
+        for (const langId of langIds) {
+          const defaultDeckId = `default-${langId}`;
+          const existingDeck = await decksTable.get(defaultDeckId).catch(() => null);
+          if (!existingDeck) {
+            await decksTable.put({
+              id: defaultDeckId,
+              name: 'Default',
+              languageId: langId,
+              createdAt: now,
+              description: 'Default vocabulary deck',
+            });
+          }
+        }
+
+        if (existingFlashcards.length > 0) {
+          const migratedCards: CardItem[] = existingFlashcards.map((fc, idx) => {
+            const langId = fc.languageId || 'ja';
+            const created = fc.createdAt || now;
+            return {
+              id: fc.id !== undefined ? `card-legacy-${fc.id}` : `card-legacy-${now}-${idx}`,
+              deckId: `default-${langId}`,
+              languageId: langId,
+              cardType: 'word_to_meaning',
+              word: fc.word || '',
+              lemma: fc.lemma || fc.word || '',
+              reading: fc.reading || '',
+              furiganaSegments: fc.furiganaSegments,
+              meaning: fc.meaning || '',
+              partOfSpeech: '',
+              level: fc.level || '',
+              frequencyBand: '',
+              sentence: fc.sentence || '',
+              sentenceFuriganaSegments: fc.sentenceFuriganaSegments,
+              sourceDocTitle: fc.sourceDocTitle || '',
+              sourceDocId: undefined,
+              tags: [],
+              notes: '',
+              createdAt: created,
+              updatedAt: created,
+              suspended: false,
+              buried: false,
+              due: undefined,
+              stability: undefined,
+              difficulty: undefined,
+              reps: undefined,
+              lapses: undefined,
+              state: undefined,
+              lastReview: undefined,
+            };
+          });
+          await cardsTable.bulkPut(migratedCards);
+        }
+      });
   }
 }
 
@@ -654,12 +784,18 @@ export async function clearAllLanguageData(): Promise<void> {
  * Strictly preserves offline dictionaries, tokenizer caches, and language pack assets.
  */
 export async function clearUserStudyData(): Promise<void> {
-  await db.transaction('rw', [db.flashcards, db.lookups, db.documents, db.wordStatuses], async () => {
-    await db.flashcards.clear();
-    await db.lookups.clear();
-    await db.documents.clear();
-    await db.wordStatuses.clear();
-  });
+  await db.transaction(
+    'rw',
+    [db.flashcards, db.cards, db.reviewLogs, db.lookups, db.documents, db.wordStatuses],
+    async () => {
+      await db.flashcards.clear();
+      await db.cards.clear();
+      await db.reviewLogs.clear();
+      await db.lookups.clear();
+      await db.documents.clear();
+      await db.wordStatuses.clear();
+    }
+  );
 }
 
 

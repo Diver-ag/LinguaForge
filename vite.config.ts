@@ -1,14 +1,21 @@
+import fs from 'fs';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import path from 'path';
 import {defineConfig} from 'vite';
 
+const pkg = JSON.parse(fs.readFileSync(path.resolve('package.json'), 'utf-8'));
+const appVersion: string = pkg.version || '0.0.0';
+const buildDate: string = new Date().toISOString();
+
 export default defineConfig(() => {
   return {
     define: {
       global: 'globalThis',
       'process.env.GEMINI_API_KEY': JSON.stringify(process.env.GEMINI_API_KEY || ''),
+      __APP_VERSION__: JSON.stringify(appVersion),
+      __BUILD_DATE__: JSON.stringify(buildDate),
     },
     plugins: [
       {
@@ -31,7 +38,7 @@ export default defineConfig(() => {
       react(),
       tailwindcss(),
       VitePWA({
-        registerType: 'autoUpdate',
+        registerType: 'prompt',
         includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'icon.svg'],
         manifest: {
           id: '/',
@@ -69,7 +76,7 @@ export default defineConfig(() => {
           maximumFileSizeToCacheInBytes: 20 * 1024 * 1024,
           cleanupOutdatedCaches: true,
           clientsClaim: true,
-          skipWaiting: true,
+          skipWaiting: false,
           runtimeCaching: [
             {
               urlPattern: ({ request }) => request.mode === 'navigate',
