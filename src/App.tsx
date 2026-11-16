@@ -10,6 +10,7 @@ import { HistoryView } from './features/history/HistoryView';
 import { LanguagePacksView } from './features/packs/LanguagePacksView';
 import { SettingsView } from './features/settings/SettingsView';
 import { CardsView } from './features/cards/CardsView';
+import { ExportView } from './features/cards/ExportView';
 import { ReviewView } from './features/review/ReviewView';
 import { StatsView } from './features/stats/StatsView';
 
@@ -37,6 +38,7 @@ export default function App() {
             <Route path="/library" element={<LibraryView />} />
             <Route path="/reader" element={<ReaderView />} />
             <Route path="/cards" element={<CardsView />} />
+            <Route path="/export" element={<ExportView />} />
             <Route path="/review" element={<ReviewView />} />
             <Route path="/stats" element={<StatsView />} />
             <Route path="/history" element={<HistoryView />} />

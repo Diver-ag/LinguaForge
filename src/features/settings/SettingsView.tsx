@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { db, type DeckItem } from '../../db/db';
 import { ensureDefaultDeck } from '../../db/cards';
 import {
@@ -55,6 +56,7 @@ import {
   Info,
   GraduationCap,
   Wrench,
+  FileArchive,
 } from 'lucide-react';
 
 export const SettingsView: React.FC = () => {
@@ -1157,6 +1159,22 @@ export const SettingsView: React.FC = () => {
                 className="hidden"
               />
             </label>
+          </div>
+
+          <div className="pt-2 border-t border-[var(--border)] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-0.5 text-xs">
+              <div className="font-bold text-[var(--text)]">Anki &amp; Spreadsheet Flashcard Export</div>
+              <div className="text-[var(--text-muted)]">
+                Export your vocabulary decks as Anki 2.1 `.apkg` packages or CSV/TSV files.
+              </div>
+            </div>
+            <Link
+              to="/export"
+              className="inline-flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] hover:bg-[var(--surface)] text-[var(--text)] font-bold text-xs transition shrink-0"
+            >
+              <FileArchive className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+              <span>Export Cards (.apkg / CSV)</span>
+            </Link>
           </div>
 
           {restoreMessage && (

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { db, type CardItem, type CardType } from '../../db/db';
 import {
   getDecksWithCounts,
@@ -34,6 +34,7 @@ import {
   AlertCircle,
   Loader2,
   BookOpen,
+  Download,
 } from 'lucide-react';
 
 const CARD_TYPE_LABELS: Record<CardType, string> = {
@@ -450,19 +451,29 @@ export const CardsView: React.FC = () => {
             </p>
           </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              setNewDeckName('');
-              setNewDeckDesc('');
-              setDeckModalError(null);
-              setShowCreateDeckModal(true);
-            }}
-            className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 min-h-[44px] rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-sm transition active:scale-95 whitespace-nowrap shrink-0"
-          >
-            <Plus className="w-4 h-4" />
-            <span>New Deck</span>
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <Link
+              to="/export"
+              className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 min-h-[44px] rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] hover:bg-[var(--surface)] text-[var(--text)] text-xs font-bold transition whitespace-nowrap"
+            >
+              <Download className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+              <span>Export</span>
+            </Link>
+
+            <button
+              type="button"
+              onClick={() => {
+                setNewDeckName('');
+                setNewDeckDesc('');
+                setDeckModalError(null);
+                setShowCreateDeckModal(true);
+              }}
+              className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 min-h-[44px] rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-sm transition active:scale-95 whitespace-nowrap"
+            >
+              <Plus className="w-4 h-4" />
+              <span>New Deck</span>
+            </button>
+          </div>
         </div>
       </header>
 

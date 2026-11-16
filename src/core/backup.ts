@@ -14,6 +14,7 @@ export interface LinguaForgeBackupData {
   decks?: any[];
   cards?: any[];
   reviewLogs?: any[];
+  exportHistory?: any[];
   eventLogs: any[];
 }
 
@@ -27,6 +28,7 @@ export async function exportFullBackup(): Promise<string> {
     decks,
     cards,
     reviewLogs,
+    exportHistory,
     eventLogs,
   ] = await Promise.all([
     db.documents.toArray(),
@@ -37,6 +39,7 @@ export async function exportFullBackup(): Promise<string> {
     db.decks.toArray(),
     db.cards.toArray(),
     db.reviewLogs.toArray(),
+    db.exportHistory.toArray(),
     db.eventLogs.toArray(),
   ]);
 
@@ -57,6 +60,7 @@ export async function exportFullBackup(): Promise<string> {
     decks,
     cards,
     reviewLogs: cleanReviewLogs,
+    exportHistory,
     eventLogs,
   };
 
@@ -102,6 +106,7 @@ export async function restoreFromBackup(jsonData: string): Promise<{ success: bo
         db.decks,
         db.cards,
         db.reviewLogs,
+        db.exportHistory,
       ],
       async () => {
         if (Array.isArray(data.documents)) {
@@ -199,6 +204,10 @@ export async function restoreFromBackup(jsonData: string): Promise<{ success: bo
           await db.reviewLogs.clear();
           const realLogs = data.reviewLogs.filter((l: any) => !l?.isDemo);
           if (realLogs.length > 0) await db.reviewLogs.bulkPut(realLogs);
+        }
+        if (Array.isArray(data.exportHistory)) {
+          await db.exportHistory.clear();
+          if (data.exportHistory.length > 0) await db.exportHistory.bulkPut(data.exportHistory);
         }
       }
     );

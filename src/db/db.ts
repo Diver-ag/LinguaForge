@@ -103,6 +103,18 @@ export interface CardItem {
   scheduledDays?: number;
   elapsedDays?: number;
   learningSteps?: number;
+  exportedAt?: number;
+}
+
+export interface ExportHistoryItem {
+  id: string;
+  exportedAt: number;
+  fileName: string;
+  format: 'apkg' | 'csv' | 'tsv';
+  languageId: string;
+  cardCount: number;
+  noteCount: number;
+  deckNames: string[];
 }
 
 export interface ReviewLogItem {
@@ -288,6 +300,7 @@ export class LinguaForgeDatabase extends Dexie {
   decks!: Table<DeckItem, string>;
   cards!: Table<CardItem, string>;
   reviewLogs!: Table<ReviewLogItem, string>;
+  exportHistory!: Table<ExportHistoryItem, string>;
   downloadedAssets!: Table<DownloadedPackAsset, [string, string]>;
   jmdictEntries!: Table<JmdictEntryItem, string>;
   dictionaryMeta!: Table<DictionaryMetaItem, string>;
@@ -494,6 +507,12 @@ export class LinguaForgeDatabase extends Dexie {
     this.version(9).stores({
       reviewLogs:
         'id, cardId, deckId, languageId, reviewedAt, state, [languageId+reviewedAt], [deckId+reviewedAt]',
+    });
+
+    this.version(10).stores({
+      cards:
+        'id, deckId, languageId, cardType, word, lemma, [lemma+reading+cardType], [languageId+deckId], level, sourceDocId, *tags, suspended, buried, buriedUntil, state, due, exportedAt, createdAt, updatedAt',
+      exportHistory: 'id, exportedAt, languageId, format',
     });
   }
 }
