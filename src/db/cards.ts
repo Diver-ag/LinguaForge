@@ -1,5 +1,6 @@
 import { db, type CardItem, type CardType, type DeckItem } from './db';
 import { getAllLanguagePacks } from '../packs/registry';
+import { invalidateStatsCache } from '../core/statsCache';
 
 export function generateEntityId(prefix: string): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -237,6 +238,7 @@ export async function addCardsForWord(params: {
     await db.cards.put(newCard);
     added.push(newCard);
   }
+  if (added.length > 0) invalidateStatsCache();
 
   return { added, duplicateTypes };
 }
@@ -246,11 +248,13 @@ export async function updateCard(id: string, patch: Partial<CardItem>): Promise<
     ...patch,
     updatedAt: Date.now(),
   });
+  invalidateStatsCache();
 }
 
 export async function deleteCards(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
   await db.cards.bulkDelete(ids);
+  invalidateStatsCache();
 }
 
 export async function bulkMoveCards(ids: string[], targetDeckId: string): Promise<void> {
@@ -258,6 +262,7 @@ export async function bulkMoveCards(ids: string[], targetDeckId: string): Promis
   const cards = (await db.cards.bulkGet(ids)).filter(Boolean) as CardItem[];
   const now = Date.now();
   await db.cards.bulkPut(cards.map((c) => ({ ...c, deckId: targetDeckId, updatedAt: now })));
+  invalidateStatsCache();
 }
 
 export async function bulkTagCards(

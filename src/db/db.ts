@@ -119,6 +119,7 @@ export interface ReviewLogItem {
   previousDue?: number;
   newDue?: number;
   isCustomStudy?: boolean;
+  isDemo?: boolean;
 }
 
 export interface FlashcardItem {
@@ -489,6 +490,11 @@ export class LinguaForgeDatabase extends Dexie {
           }
         });
       });
+
+    this.version(9).stores({
+      reviewLogs:
+        'id, cardId, deckId, languageId, reviewedAt, state, [languageId+reviewedAt], [deckId+reviewedAt]',
+    });
   }
 }
 

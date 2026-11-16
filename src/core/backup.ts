@@ -40,6 +40,11 @@ export async function exportFullBackup(): Promise<string> {
     db.eventLogs.toArray(),
   ]);
 
+  const cleanSettings = settings.filter(
+    (s) => s.key !== 'demoSyntheticMeta' && s.key !== 'developerSettings'
+  );
+  const cleanReviewLogs = reviewLogs.filter((r) => !r.isDemo);
+
   const backup: LinguaForgeBackupData = {
     version: 2,
     appName: 'LinguaForge',
@@ -47,11 +52,11 @@ export async function exportFullBackup(): Promise<string> {
     documents,
     wordStatuses,
     lookups,
-    settings,
+    settings: cleanSettings,
     flashcards,
     decks,
     cards,
-    reviewLogs,
+    reviewLogs: cleanReviewLogs,
     eventLogs,
   };
 
@@ -113,7 +118,10 @@ export async function restoreFromBackup(jsonData: string): Promise<{ success: bo
         }
         if (Array.isArray(data.settings)) {
           await db.settings.clear();
-          if (data.settings.length > 0) await db.settings.bulkPut(data.settings);
+          const cleanSettings = data.settings.filter(
+            (s: any) => s?.key !== 'demoSyntheticMeta' && s?.key !== 'developerSettings'
+          );
+          if (cleanSettings.length > 0) await db.settings.bulkPut(cleanSettings);
         }
         if (Array.isArray(data.flashcards)) {
           await db.flashcards.clear();
@@ -189,7 +197,8 @@ export async function restoreFromBackup(jsonData: string): Promise<{ success: bo
 
         if (Array.isArray(data.reviewLogs)) {
           await db.reviewLogs.clear();
-          if (data.reviewLogs.length > 0) await db.reviewLogs.bulkPut(data.reviewLogs);
+          const realLogs = data.reviewLogs.filter((l: any) => !l?.isDemo);
+          if (realLogs.length > 0) await db.reviewLogs.bulkPut(realLogs);
         }
       }
     );

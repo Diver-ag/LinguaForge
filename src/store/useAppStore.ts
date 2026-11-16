@@ -205,7 +205,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       await get().setWordStatus(word, 'learning');
     }
 
-    await logEvent('word_lookup', { word, docId });
+    await logEvent('word_lookup', { word, docId, langId });
   },
 }));
 

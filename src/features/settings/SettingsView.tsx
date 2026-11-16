@@ -2,15 +2,24 @@ import React, { useState, useEffect } from 'react';
 import { db, type DeckItem } from '../../db/db';
 import { ensureDefaultDeck } from '../../db/cards';
 import {
+  DEFAULT_DEVELOPER_SETTINGS,
   DEFAULT_STUDY_SETTINGS,
+  getDeveloperSettings,
   getEffectiveDeckLimits,
   getStudySettings,
   saveDeckStudySettings,
+  saveDeveloperSettings,
   saveStudySettings,
+  type DeveloperSettings,
   type NewCardMix,
   type NewCardOrder,
   type StudySettings,
 } from '../../core/studySettings';
+import {
+  deleteAllDemoData,
+  generateDemoHistory,
+  getDemoDataStatus,
+} from '../../core/demoData';
 import { useAppStore, type AppTheme, type FuriganaMode, type FontSize } from '../../store/useAppStore';
 import {
   getStoredApiKey,
@@ -45,6 +54,7 @@ import {
   Cpu,
   Info,
   GraduationCap,
+  Wrench,
 } from 'lucide-react';
 
 export const SettingsView: React.FC = () => {
@@ -69,6 +79,19 @@ export const SettingsView: React.FC = () => {
   const [studyDecks, setStudyDecks] = useState<DeckItem[]>([]);
   const [studyScopeDeckId, setStudyScopeDeckId] = useState<string>('global');
   const [studySavedToast, setStudySavedToast] = useState(false);
+
+  // Developer tools / demo data state
+  const [devSettings, setDevSettings] = useState<DeveloperSettings>(DEFAULT_DEVELOPER_SETTINGS);
+  const [demoDays, setDemoDays] = useState<number>(90);
+  const [demoCardsCount, setDemoCardsCount] = useState<number>(60);
+  const [demoStatus, setDemoStatus] = useState<{
+    hasDemoData: boolean;
+    logCount: number;
+    cardCount: number;
+    days: number;
+  }>({ hasDemoData: false, logCount: 0, cardCount: 0, days: 0 });
+  const [isGeneratingDemo, setIsGeneratingDemo] = useState(false);
+  const [demoMessage, setDemoMessage] = useState<string | null>(null);
 
   const [apiKey, setApiKey] = useState('');
   const [isSavingKey, setIsSavingKey] = useState(false);
@@ -134,6 +157,13 @@ export const SettingsView: React.FC = () => {
 
       const loadedStudy = await getStudySettings();
       setStudySettings(loadedStudy);
+
+      const [loadedDev, loadedDemoStatus] = await Promise.all([
+        getDeveloperSettings(),
+        getDemoDataStatus(),
+      ]);
+      setDevSettings(loadedDev);
+      setDemoStatus(loadedDemoStatus);
 
       loadDiagnostics();
     }
@@ -204,6 +234,44 @@ export const SettingsView: React.FC = () => {
       )
     );
     flashStudyToast();
+  };
+
+  const handleUpdateDeveloperSettings = async (patch: Partial<DeveloperSettings>) => {
+    const next = await saveDeveloperSettings(patch);
+    setDevSettings(next);
+  };
+
+  const handleGenerateDemoData = async () => {
+    setIsGeneratingDemo(true);
+    setDemoMessage(null);
+    try {
+      const res = await generateDemoHistory({
+        days: demoDays,
+        cardCount: demoCardsCount,
+        languageId: activeLanguageId,
+        resetHour: studySettings.dayResetHour,
+      });
+      const updated = await getDemoDataStatus();
+      setDemoStatus(updated);
+      setDemoMessage(
+        `Generated ${res.logCount.toLocaleString()} synthetic review logs across ${res.days} days (${res.cardCount} demo cards). Toggle "Include demo data" below to preview them in Stats.`
+      );
+    } catch (err: any) {
+      setDemoMessage(`Failed to generate demo data: ${err?.message || String(err)}`);
+    } finally {
+      setIsGeneratingDemo(false);
+    }
+  };
+
+  const handleDeleteDemoData = async () => {
+    const deleted = await deleteAllDemoData();
+    const nextDev = await saveDeveloperSettings({ includeDemoData: false });
+    setDevSettings(nextDev);
+    const updated = await getDemoDataStatus();
+    setDemoStatus(updated);
+    setDemoMessage(
+      `Deleted ${deleted.toLocaleString()} demo review logs and all synthetic demo data. Real statistics and card schedules are untouched.`
+    );
   };
 
   const loadModelList = async (keyToUse: string, currentSelectedModel?: string) => {
@@ -990,6 +1058,69 @@ export const SettingsView: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {/* Daily Goal & Streak Settings */}
+            <div className="pt-4 border-t border-[var(--border)] grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <label className="space-y-1">
+                <span className="font-semibold text-[var(--text-secondary)] block">
+                  Daily goal (reviews)
+                </span>
+                <input
+                  type="number"
+                  min={1}
+                  max={9999}
+                  value={studySettings.dailyGoalReviews}
+                  onChange={(e) =>
+                    handleUpdateGlobalStudy({
+                      dailyGoalReviews: Math.max(1, Math.round(Number(e.target.value) || 30)),
+                    })
+                  }
+                  className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text)] tabular-nums"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="font-semibold text-[var(--text-secondary)] block">
+                  Streak min reviews / day
+                </span>
+                <input
+                  type="number"
+                  min={1}
+                  max={999}
+                  value={studySettings.streakMinReviews}
+                  onChange={(e) =>
+                    handleUpdateGlobalStudy({
+                      streakMinReviews: Math.max(1, Math.round(Number(e.target.value) || 1)),
+                    })
+                  }
+                  className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text)] tabular-nums"
+                />
+              </label>
+
+              <div className="space-y-1">
+                <span className="font-semibold text-[var(--text-secondary)] block">
+                  Streak freeze (1 skipped day / week)
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleUpdateGlobalStudy({
+                      streakFreezeEnabled: !studySettings.streakFreezeEnabled,
+                    })
+                  }
+                  className={`w-full min-h-[40px] px-3 py-1.5 rounded-xl border font-semibold flex items-center justify-between transition ${
+                    studySettings.streakFreezeEnabled
+                      ? 'border-emerald-500 bg-emerald-50/70 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+                      : 'border-[var(--border)] text-[var(--text-muted)]'
+                  }`}
+                >
+                  <span>{studySettings.streakFreezeEnabled ? 'Enabled (1/week)' : 'Disabled'}</span>
+                  <span className="font-bold">
+                    {studySettings.streakFreezeEnabled ? 'ON' : 'OFF'}
+                  </span>
+                </button>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -1114,6 +1245,133 @@ export const SettingsView: React.FC = () => {
             Clear All IndexedDB Tables
           </button>
         </div>
+
+        {/* Developer Tools Toggle & Section */}
+        <section
+          aria-label="Developer Settings"
+          className="p-6 rounded-3xl bg-[var(--surface)] border border-[var(--border)] shadow-xs space-y-4"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="space-y-0.5">
+              <h2 className="font-bold text-base text-[var(--text)] flex items-center gap-2">
+                <Wrench className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                <span>Developer</span>
+              </h2>
+              <p className="text-xs text-[var(--text-muted)]">
+                Optional synthetic review history tools for previewing charts without affecting real cards or backups.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() =>
+                handleUpdateDeveloperSettings({
+                  showDeveloperTools: !devSettings.showDeveloperTools,
+                })
+              }
+              className={`px-3.5 py-2 rounded-xl border text-xs font-bold transition shrink-0 ${
+                devSettings.showDeveloperTools
+                  ? 'border-indigo-600 bg-[var(--accent-subtle)] text-[var(--accent-text)]'
+                  : 'border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--surface-muted)]'
+              }`}
+            >
+              {devSettings.showDeveloperTools ? 'Show developer tools: ON' : 'Show developer tools'}
+            </button>
+          </div>
+
+          {devSettings.showDeveloperTools && (
+            <div className="pt-4 border-t border-[var(--border)] space-y-4 text-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-2xl bg-[var(--surface-muted)]/70 border border-[var(--border)]">
+                <div className="space-y-0.5">
+                  <div className="font-bold text-[var(--text)]">Include demo data in Statistics</div>
+                  <div className="text-[11px] text-[var(--text-muted)] tabular-nums">
+                    {demoStatus.hasDemoData
+                      ? `${demoStatus.logCount.toLocaleString()} demo logs (${demoStatus.days} days, ${demoStatus.cardCount} synthetic cards) stored`
+                      : 'No synthetic demo data generated yet.'}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleUpdateDeveloperSettings({
+                      includeDemoData: !devSettings.includeDemoData,
+                    })
+                  }
+                  className={`min-h-[38px] px-4 py-1.5 rounded-xl border font-bold transition shrink-0 ${
+                    devSettings.includeDemoData
+                      ? 'border-amber-500 bg-amber-500/15 text-amber-800 dark:text-amber-300'
+                      : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)]'
+                  }`}
+                >
+                  Include demo data: {devSettings.includeDemoData ? 'ON' : 'OFF'}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="space-y-1">
+                  <span className="font-semibold text-[var(--text-secondary)] block">
+                    History span (days)
+                  </span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={730}
+                    value={demoDays}
+                    onChange={(e) =>
+                      setDemoDays(Math.min(730, Math.max(1, Math.round(Number(e.target.value) || 90))))
+                    }
+                    className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text)] tabular-nums"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="font-semibold text-[var(--text-secondary)] block">
+                    Synthetic cards count
+                  </span>
+                  <input
+                    type="number"
+                    min={5}
+                    max={500}
+                    value={demoCardsCount}
+                    onChange={(e) =>
+                      setDemoCardsCount(
+                        Math.min(500, Math.max(5, Math.round(Number(e.target.value) || 60)))
+                      )
+                    }
+                    className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text)] tabular-nums"
+                  />
+                </label>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={handleGenerateDemoData}
+                  disabled={isGeneratingDemo}
+                  className="min-h-[40px] px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold inline-flex items-center gap-1.5"
+                >
+                  {isGeneratingDemo && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  <span>Generate demo review history</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleDeleteDemoData}
+                  disabled={!demoStatus.hasDemoData || isGeneratingDemo}
+                  className="min-h-[40px] px-4 py-2 rounded-xl border border-rose-500/40 bg-rose-500/10 hover:bg-rose-500/20 disabled:opacity-40 text-rose-700 dark:text-rose-300 font-bold"
+                >
+                  Delete all demo data
+                </button>
+              </div>
+
+              {demoMessage && (
+                <div className="p-3 rounded-xl bg-[var(--accent-subtle)] border border-indigo-500/30 text-[var(--accent-text)] font-medium">
+                  {demoMessage}
+                </div>
+              )}
+            </div>
+          )}
+        </section>
 
         {/* About */}
         <div className="p-6 rounded-3xl bg-[var(--surface)] border border-[var(--border)] shadow-xs space-y-4">

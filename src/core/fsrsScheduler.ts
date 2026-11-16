@@ -11,6 +11,7 @@ import {
   getStudyDayBounds,
   type StudySettings,
 } from './studySettings';
+import { invalidateStatsCache } from './statsCache';
 
 export { Rating, State, type Grade };
 
@@ -224,6 +225,7 @@ export async function answerCard(params: {
     await db.cards.put(updatedCard);
     await db.reviewLogs.put(reviewLog);
   });
+  invalidateStatsCache();
 
   return {
     updatedCard,
@@ -241,6 +243,7 @@ export async function undoReview(params: {
     await db.cards.put(params.previousSnapshot);
     await db.reviewLogs.delete(params.reviewLogId);
   });
+  invalidateStatsCache();
   return params.previousSnapshot;
 }
 
@@ -255,6 +258,7 @@ export async function buryCard(
     buriedUntil: nextDayStartMs,
     updatedAt: nowMs,
   });
+  invalidateStatsCache();
 }
 
 export async function suspendCard(cardId: string, suspended = true): Promise<void> {
@@ -262,6 +266,7 @@ export async function suspendCard(cardId: string, suspended = true): Promise<voi
     suspended,
     updatedAt: Date.now(),
   });
+  invalidateStatsCache();
 }
 
 export async function unburyAllCards(languageId: string, deckId?: string): Promise<number> {

@@ -57,6 +57,10 @@ class WorkerLinguaForgeDB extends Dexie {
         'id, deckId, languageId, cardType, word, lemma, [lemma+reading+cardType], [languageId+deckId], level, sourceDocId, *tags, suspended, buried, buriedUntil, state, due, createdAt, updatedAt',
       reviewLogs: 'id, cardId, deckId, languageId, reviewedAt, state',
     });
+    this.version(9).stores({
+      reviewLogs:
+        'id, cardId, deckId, languageId, reviewedAt, state, [languageId+reviewedAt], [deckId+reviewedAt]',
+    });
   }
 }
 

@@ -29,6 +29,8 @@ import {
 import { FuriganaText } from '../../ui/FuriganaText';
 import { HighlightedSentence } from './HighlightedSentence';
 import { CardEditModal } from '../cards/CardEditModal';
+import { getTodayReviewCount } from '../../core/statsEngine';
+import { DailyGoalRing } from '../../components/DailyGoalRing';
 import {
   GraduationCap,
   Play,
@@ -112,6 +114,7 @@ export const ReviewView: React.FC = () => {
   const [allCards, setAllCards] = useState<CardItem[]>([]);
   const [earliestNextDueAt, setEarliestNextDueAt] = useState<number | null>(null);
   const [totalBuriedCount, setTotalBuriedCount] = useState(0);
+  const [todayReviewCount, setTodayReviewCount] = useState(0);
   const [isLoadingHome, setIsLoadingHome] = useState(true);
   const [homeError, setHomeError] = useState<string | null>(null);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
@@ -149,17 +152,22 @@ export const ReviewView: React.FC = () => {
       const settings = await getStudySettings();
       setStudySettings(settings);
 
-      const [{ summaries: sList, earliestNextDueAt: nextDue, totalBuriedCount: buried }, cards] =
-        await Promise.all([
-          getDeckQueueSummaries(activeLanguageId, settings),
-          db.cards.where('languageId').equals(activeLanguageId).toArray(),
-        ]);
+      const [
+        { summaries: sList, earliestNextDueAt: nextDue, totalBuriedCount: buried },
+        cards,
+        todayCount,
+      ] = await Promise.all([
+        getDeckQueueSummaries(activeLanguageId, settings),
+        db.cards.where('languageId').equals(activeLanguageId).toArray(),
+        getTodayReviewCount(activeLanguageId, settings, false),
+      ]);
 
       setSummaries(sList);
       setAllDecks(sList.map((s) => s.deck));
       setAllCards(cards);
       setEarliestNextDueAt(nextDue);
       setTotalBuriedCount(buried);
+      setTodayReviewCount(todayCount);
     } catch (err: any) {
       setHomeError(err?.message || 'Failed to load review decks.');
     } finally {
@@ -1329,6 +1337,21 @@ export const ReviewView: React.FC = () => {
                 </button>
               </section>
             )}
+
+            {/* Daily Goal Progress Ring */}
+            <section className="p-4 sm:p-5 rounded-3xl bg-[var(--surface)] border border-[var(--border)] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <DailyGoalRing
+                reviewed={todayReviewCount}
+                goal={studySettings.dailyGoalReviews}
+              />
+              <button
+                type="button"
+                onClick={() => navigate('/stats')}
+                className="min-h-[40px] px-4 py-2 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] hover:bg-[var(--border)] text-xs font-bold text-[var(--text)] self-start sm:self-center shrink-0"
+              >
+                View Stats
+              </button>
+            </section>
 
             {/* Deck Picker */}
             <section className="space-y-3" aria-label="Study decks">

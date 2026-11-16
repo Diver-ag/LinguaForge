@@ -1,5 +1,6 @@
 import { db, type DeckItem } from '../db/db';
 import { logEvent } from './eventLogger';
+import { invalidateStatsCache } from './statsCache';
 
 export type NewCardOrder = 'added' | 'random';
 export type NewCardMix = 'first' | 'mixed' | 'after';
@@ -20,6 +21,9 @@ export interface StudySettings {
   maximumInterval: number; // max days (default 36500)
   enableFuzz: boolean; // default true
   leechThreshold: number; // default 8 lapses
+  dailyGoalReviews: number; // default 30 reviews/day
+  streakMinReviews: number; // default 1 review/day to count toward streak
+  streakFreezeEnabled: boolean; // optional 1 free skipped day/week (default false)
 }
 
 export const DEFAULT_STUDY_SETTINGS: StudySettings = {
@@ -32,9 +36,24 @@ export const DEFAULT_STUDY_SETTINGS: StudySettings = {
   maximumInterval: 36500,
   enableFuzz: true,
   leechThreshold: 8,
+  dailyGoalReviews: 30,
+  streakMinReviews: 1,
+  streakFreezeEnabled: false,
 };
 
 export const STUDY_SETTINGS_KEY = 'studySettings';
+export const DEVELOPER_SETTINGS_KEY = 'developerSettings';
+export const DEMO_SYNTHETIC_META_KEY = 'demoSyntheticMeta';
+
+export interface DeveloperSettings {
+  showDeveloperTools: boolean;
+  includeDemoData: boolean;
+}
+
+export const DEFAULT_DEVELOPER_SETTINGS: DeveloperSettings = {
+  showDeveloperTools: false,
+  includeDemoData: false,
+};
 
 export function normalizeStudySettings(raw?: Partial<StudySettings> | null): StudySettings {
   const s = raw || {};
@@ -53,6 +72,12 @@ export function normalizeStudySettings(raw?: Partial<StudySettings> | null): Stu
     maximumInterval: Math.round(clampNum(s.maximumInterval, DEFAULT_STUDY_SETTINGS.maximumInterval, 1, 36500)),
     enableFuzz: s.enableFuzz !== undefined ? Boolean(s.enableFuzz) : DEFAULT_STUDY_SETTINGS.enableFuzz,
     leechThreshold: Math.round(clampNum(s.leechThreshold, DEFAULT_STUDY_SETTINGS.leechThreshold, 1, 100)),
+    dailyGoalReviews: Math.round(clampNum(s.dailyGoalReviews, DEFAULT_STUDY_SETTINGS.dailyGoalReviews, 1, 9999)),
+    streakMinReviews: Math.round(clampNum(s.streakMinReviews, DEFAULT_STUDY_SETTINGS.streakMinReviews, 1, 999)),
+    streakFreezeEnabled:
+      s.streakFreezeEnabled !== undefined
+        ? Boolean(s.streakFreezeEnabled)
+        : DEFAULT_STUDY_SETTINGS.streakFreezeEnabled,
   };
 }
 
@@ -69,7 +94,40 @@ export async function saveStudySettings(patch: Partial<StudySettings>): Promise<
   const current = await getStudySettings();
   const next = normalizeStudySettings({ ...current, ...patch });
   await db.settings.put({ key: STUDY_SETTINGS_KEY, value: next });
+  invalidateStatsCache();
   await logEvent('study_settings_updated', next);
+  return next;
+}
+
+export async function getDeveloperSettings(): Promise<DeveloperSettings> {
+  try {
+    const item = await db.settings.get(DEVELOPER_SETTINGS_KEY);
+    const val = item?.value || {};
+    return {
+      showDeveloperTools: Boolean(val.showDeveloperTools),
+      includeDemoData: Boolean(val.includeDemoData),
+    };
+  } catch {
+    return { ...DEFAULT_DEVELOPER_SETTINGS };
+  }
+}
+
+export async function saveDeveloperSettings(
+  patch: Partial<DeveloperSettings>
+): Promise<DeveloperSettings> {
+  const current = await getDeveloperSettings();
+  const next: DeveloperSettings = {
+    showDeveloperTools:
+      patch.showDeveloperTools !== undefined
+        ? Boolean(patch.showDeveloperTools)
+        : current.showDeveloperTools,
+    includeDemoData:
+      patch.includeDemoData !== undefined
+        ? Boolean(patch.includeDemoData)
+        : current.includeDemoData,
+  };
+  await db.settings.put({ key: DEVELOPER_SETTINGS_KEY, value: next });
+  invalidateStatsCache();
   return next;
 }
 
@@ -133,6 +191,7 @@ export async function saveDeckStudySettings(
   await db.decks.update(deckId, {
     studySettings: isEmpty ? undefined : clean,
   });
+  invalidateStatsCache();
   await logEvent('deck_study_settings_updated', { deckId, hasOverrides: !isEmpty });
 }
 
@@ -177,4 +236,34 @@ export function getStudyDayBounds(
     dayStartMs: todayReset.getTime(),
     nextDayStartMs: tomorrowReset.getTime(),
   };
+}
+
+export function formatLocalDateKey(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+export function parseLocalDateKey(key: string): Date {
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(y, (m || 1) - 1, d || 1, 12, 0, 0, 0);
+}
+
+export function shiftLocalDateKey(key: string, deltaDays: number): string {
+  const d = parseLocalDateKey(key);
+  d.setDate(d.getDate() + deltaDays);
+  return formatLocalDateKey(d);
+}
+
+/**
+ * Returns the YYYY-MM-DD key for the study day containing timestampMs given dayResetHour.
+ */
+export function getStudyDayKey(timestampMs: number, resetHour: number = 4): string {
+  const safeResetHour = Math.min(23, Math.max(0, Math.round(resetHour)));
+  const d = new Date(timestampMs);
+  if (d.getHours() < safeResetHour) {
+    d.setDate(d.getDate() - 1);
+  }
+  return formatLocalDateKey(d);
 }
