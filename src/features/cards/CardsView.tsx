@@ -35,6 +35,7 @@ import {
   Loader2,
   BookOpen,
   Download,
+  Upload,
 } from 'lucide-react';
 
 const CARD_TYPE_LABELS: Record<CardType, string> = {
@@ -452,6 +453,14 @@ export const CardsView: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            <Link
+              to="/cards/import"
+              className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 min-h-[44px] rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] hover:bg-[var(--surface)] text-[var(--text)] text-xs font-bold transition whitespace-nowrap"
+            >
+              <Upload className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+              <span>Import</span>
+            </Link>
+
             <Link
               to="/export"
               className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 min-h-[44px] rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] hover:bg-[var(--surface)] text-[var(--text)] text-xs font-bold transition whitespace-nowrap"
