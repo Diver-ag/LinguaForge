@@ -23,11 +23,13 @@ import {
 } from '../../core/cardCsvImport';
 import { useAppStore } from '../../store/useAppStore';
 import { getLanguagePack } from '../../packs/registry';
+import { ApkgImportSection } from './ApkgImportSection';
 import {
   AlertCircle,
   ArrowLeft,
   CheckCircle2,
   Download,
+  FileArchive,
   FileSpreadsheet,
   FolderPlus,
   Loader2,
@@ -53,6 +55,7 @@ export const ImportCardsView: React.FC = () => {
   const { activeLanguageId } = useAppStore();
   const pack = getLanguagePack(activeLanguageId);
 
+  const [importMode, setImportMode] = useState<'csv' | 'apkg'>('csv');
   const [decks, setDecks] = useState<DeckItem[]>([]);
   const [isLoadingDecks, setIsLoadingDecks] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -377,17 +380,65 @@ export const ImportCardsView: React.FC = () => {
               <span>Back to Cards</span>
             </Link>
             <h1 className="text-2xl font-black tracking-tight flex items-center gap-2 text-[var(--text)]">
-              <FileSpreadsheet className="w-6 h-6 text-indigo-600 dark:text-indigo-400" />
-              <span>Import Cards from CSV / TSV</span>
+              {importMode === 'apkg' ? (
+                <FileArchive className="w-6 h-6 text-indigo-600 dark:text-indigo-400" />
+              ) : (
+                <FileSpreadsheet className="w-6 h-6 text-indigo-600 dark:text-indigo-400" />
+              )}
+              <span>
+                {importMode === 'apkg'
+                  ? 'Import Cards from Anki (.apkg)'
+                  : 'Import Cards from CSV / TSV'}
+              </span>
             </h1>
             <p className="text-xs text-[var(--text-muted)]">
-              {pack.flagEmoji} {pack.name} · Imports CSV, TSV, or TXT files completely offline and generates furigana automatically
+              {pack.flagEmoji} {pack.name} ·{' '}
+              {importMode === 'apkg'
+                ? 'Unpacks .apkg decks, note types, furigana, and tags completely offline'
+                : 'Imports CSV, TSV, or TXT files completely offline and generates furigana automatically'}
             </p>
           </div>
         </div>
       </header>
 
       <main className="max-w-6xl w-full mx-auto p-4 sm:p-6 space-y-6">
+        {/* Source Format Switcher */}
+        <div
+          role="tablist"
+          aria-label="Import format"
+          className="inline-flex flex-wrap items-center gap-1 p-1.5 rounded-2xl bg-[var(--surface)] border border-[var(--border)]"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={importMode === 'csv'}
+            onClick={() => setImportMode('csv')}
+            className={`min-h-[40px] px-4 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-2 transition whitespace-nowrap ${
+              importMode === 'csv'
+                ? 'bg-indigo-600 text-white shadow-sm'
+                : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-muted)]'
+            }`}
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            <span>CSV / TSV / TXT</span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={importMode === 'apkg'}
+            onClick={() => setImportMode('apkg')}
+            className={`min-h-[40px] px-4 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-2 transition whitespace-nowrap ${
+              importMode === 'apkg'
+                ? 'bg-indigo-600 text-white shadow-sm'
+                : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-muted)]'
+            }`}
+          >
+            <FileArchive className="w-4 h-4" />
+            <span>Anki package (.apkg)</span>
+          </button>
+        </div>
+
         {loadError && (
           <div className="p-4 rounded-2xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 flex items-center justify-between gap-3 text-xs text-rose-800 dark:text-rose-200">
             <div className="flex items-center gap-2">
@@ -404,11 +455,19 @@ export const ImportCardsView: React.FC = () => {
           </div>
         )}
 
-        {/* Step 1: Choose File */}
-        <section
-          aria-label="Choose File"
-          className="p-5 rounded-3xl bg-[var(--surface)] border border-[var(--border)] space-y-4"
-        >
+        {importMode === 'apkg' ? (
+          <ApkgImportSection
+            decks={decks}
+            isLoadingDecks={isLoadingDecks}
+            onDecksChanged={loadDecks}
+          />
+        ) : (
+          <>
+            {/* Step 1: Choose File */}
+            <section
+              aria-label="Choose File"
+              className="p-5 rounded-3xl bg-[var(--surface)] border border-[var(--border)] space-y-4"
+            >
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="font-bold text-sm text-[var(--text)]">
               1. Choose CSV, TSV, or TXT file
@@ -943,6 +1002,8 @@ export const ImportCardsView: React.FC = () => {
               </div>
             )}
           </section>
+        )}
+          </>
         )}
       </main>
     </div>
