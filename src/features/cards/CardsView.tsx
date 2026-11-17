@@ -66,6 +66,18 @@ const LEVEL_SORT_ORDER: Record<string, number> = {
   B2: 4,
   C1: 5,
   C2: 6,
+  'TOPIK 1': 1,
+  'TOPIK 2': 2,
+  'TOPIK 3': 3,
+  'TOPIK 4': 4,
+  'TOPIK 5': 5,
+  'TOPIK 6': 6,
+  'HSK 1': 1,
+  'HSK 2': 2,
+  'HSK 3': 3,
+  'HSK 4': 4,
+  'HSK 5': 5,
+  'HSK 6': 6,
 };
 
 function getLevelRank(level?: string): number {

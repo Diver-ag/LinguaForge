@@ -1,7 +1,8 @@
 import { db, type CardItem, type CardType, type DeckItem } from '../db/db';
 import { ensureDefaultDeck, generateEntityId } from '../db/cards';
-import type { FuriganaSegment, Token } from './languagePack';
+import { packSupportsRuby, type FuriganaSegment, type Token } from './languagePack';
 import { buildFurigana } from '../packs/japanese/kanaUtils';
+import { buildMandarinPinyinSegments } from '../packs/multilingualPack';
 import { invalidateStatsCache } from './statsCache';
 import { logEvent } from './eventLogger';
 
@@ -544,10 +545,21 @@ export async function enrichCardFuriganaAndMetadata(params: {
 }> {
   let lemma = params.word;
   let reading = params.reading;
-  let furiganaSegments = params.existingWordFurigana;
+  const supportsRuby = packSupportsRuby({ id: params.languageId });
+  let furiganaSegments = supportsRuby ? params.existingWordFurigana : undefined;
   let partOfSpeech = '';
 
   const hasKanji = /[\u4e00-\u9faf\u3400-\u4dbf々〆〇]/.test(params.word);
+
+  if (params.languageId === 'zh' && (!furiganaSegments || furiganaSegments.length === 0) && params.word) {
+    const py = buildMandarinPinyinSegments(params.word);
+    if (!reading && py.reading) {
+      reading = py.reading;
+    }
+    if (py.furiganaSegments && py.furiganaSegments.length > 0) {
+      furiganaSegments = py.furiganaSegments;
+    }
+  }
 
   // Use tokenizer when furigana data is missing and reading is available (or to enrich lemma/sentence)
   if ((!furiganaSegments || furiganaSegments.length === 0) && params.word) {
@@ -562,16 +574,22 @@ export async function enrichCardFuriganaAndMetadata(params: {
           if (!reading && tok.reading && tok.reading !== params.word) {
             reading = tok.reading;
           }
-          // When reading is available, align furigana segments with tokenizer / buildFurigana
-          if (reading) {
-            furiganaSegments =
-              buildFurigana(params.word, reading, lemma) || tok.furiganaSegments;
-          } else if (tok.furiganaSegments && tok.furiganaSegments.length > 0) {
-            furiganaSegments = tok.furiganaSegments;
+          if (supportsRuby) {
+            if (params.languageId === 'zh') {
+              furiganaSegments =
+                buildMandarinPinyinSegments(params.word).furiganaSegments || tok.furiganaSegments;
+            } else if (reading) {
+              furiganaSegments =
+                buildFurigana(params.word, reading, lemma) || tok.furiganaSegments;
+            } else if (tok.furiganaSegments && tok.furiganaSegments.length > 0) {
+              furiganaSegments = tok.furiganaSegments;
+            }
           }
-        } else if (wordTokens.length > 1) {
+        } else if (wordTokens.length > 1 && supportsRuby) {
           // Compound expression tokenized into multiple tokens
-          if (reading && hasKanji) {
+          if (params.languageId === 'zh') {
+            furiganaSegments = buildMandarinPinyinSegments(params.word).furiganaSegments;
+          } else if (reading && hasKanji) {
             furiganaSegments = buildFurigana(params.word, reading, params.word);
           } else {
             const combined = tokens.flatMap(
@@ -587,19 +605,22 @@ export async function enrichCardFuriganaAndMetadata(params: {
       }
     }
 
-    if ((!furiganaSegments || furiganaSegments.length === 0) && hasKanji && reading) {
-      furiganaSegments = buildFurigana(params.word, reading, lemma);
+    if (supportsRuby && (!furiganaSegments || furiganaSegments.length === 0) && hasKanji && reading) {
+      furiganaSegments =
+        params.languageId === 'zh'
+          ? buildMandarinPinyinSegments(params.word).furiganaSegments
+          : buildFurigana(params.word, reading, lemma);
     }
   }
 
   let sentenceFuriganaSegments: FuriganaSegment[] | undefined;
-  if (params.sentence && params.tokenizeFn) {
+  if (supportsRuby && params.sentence && params.tokenizeFn) {
     try {
       const sentTokens = await params.tokenizeFn(params.sentence);
       const segs = sentTokens.flatMap(
         (t) => t.furiganaSegments || (t.surface ? [{ text: t.surface }] : [])
       );
-      if (segs.length > 0) {
+      if (segs.some((s) => Boolean(s.ruby))) {
         sentenceFuriganaSegments = segs;
       }
     } catch {
@@ -610,8 +631,8 @@ export async function enrichCardFuriganaAndMetadata(params: {
   return {
     lemma: lemma || params.word,
     reading,
-    furiganaSegments,
-    sentenceFuriganaSegments,
+    furiganaSegments: supportsRuby ? furiganaSegments : undefined,
+    sentenceFuriganaSegments: supportsRuby ? sentenceFuriganaSegments : undefined,
     partOfSpeech,
   };
 }

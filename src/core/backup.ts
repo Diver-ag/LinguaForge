@@ -15,6 +15,7 @@ export interface LinguaForgeBackupData {
   cards?: any[];
   reviewLogs?: any[];
   exportHistory?: any[];
+  installedLanguagePacks?: any[];
   eventLogs: any[];
 }
 
@@ -29,6 +30,7 @@ export async function exportFullBackup(): Promise<string> {
     cards,
     reviewLogs,
     exportHistory,
+    installedLanguagePacks,
     eventLogs,
   ] = await Promise.all([
     db.documents.toArray(),
@@ -40,12 +42,23 @@ export async function exportFullBackup(): Promise<string> {
     db.cards.toArray(),
     db.reviewLogs.toArray(),
     db.exportHistory.toArray(),
+    db.installedPacks.toArray(),
     db.eventLogs.toArray(),
   ]);
 
-  const cleanSettings = settings.filter(
-    (s) => s.key !== 'demoSyntheticMeta' && s.key !== 'developerSettings'
-  );
+  const cleanSettings = settings
+    .filter((s) => s.key !== 'demoSyntheticMeta')
+    .map((s) =>
+      s.key === 'developerSettings'
+        ? {
+            key: 'developerSettings',
+            value: {
+              showDeveloperTools: Boolean(s.value?.showDeveloperTools),
+              includeDemoData: false,
+            },
+          }
+        : s
+    );
   const cleanReviewLogs = reviewLogs.filter((r) => !r.isDemo);
 
   const backup: LinguaForgeBackupData = {
@@ -61,6 +74,7 @@ export async function exportFullBackup(): Promise<string> {
     cards,
     reviewLogs: cleanReviewLogs,
     exportHistory,
+    installedLanguagePacks,
     eventLogs,
   };
 
@@ -107,6 +121,7 @@ export async function restoreFromBackup(jsonData: string): Promise<{ success: bo
         db.cards,
         db.reviewLogs,
         db.exportHistory,
+        db.installedPacks,
       ],
       async () => {
         if (Array.isArray(data.documents)) {
@@ -123,9 +138,19 @@ export async function restoreFromBackup(jsonData: string): Promise<{ success: bo
         }
         if (Array.isArray(data.settings)) {
           await db.settings.clear();
-          const cleanSettings = data.settings.filter(
-            (s: any) => s?.key !== 'demoSyntheticMeta' && s?.key !== 'developerSettings'
-          );
+          const cleanSettings = data.settings
+            .filter((s: any) => s?.key !== 'demoSyntheticMeta')
+            .map((s: any) =>
+              s?.key === 'developerSettings'
+                ? {
+                    key: 'developerSettings',
+                    value: {
+                      showDeveloperTools: Boolean(s.value?.showDeveloperTools),
+                      includeDemoData: false,
+                    },
+                  }
+                : s
+            );
           if (cleanSettings.length > 0) await db.settings.bulkPut(cleanSettings);
         }
         if (Array.isArray(data.flashcards)) {
@@ -226,6 +251,12 @@ export async function restoreFromBackup(jsonData: string): Promise<{ success: bo
         if (Array.isArray(data.exportHistory)) {
           await db.exportHistory.clear();
           if (data.exportHistory.length > 0) await db.exportHistory.bulkPut(data.exportHistory);
+        }
+        if (Array.isArray(data.installedLanguagePacks)) {
+          await db.installedPacks.clear();
+          if (data.installedLanguagePacks.length > 0) {
+            await db.installedPacks.bulkPut(data.installedLanguagePacks);
+          }
         }
       }
     );

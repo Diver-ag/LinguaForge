@@ -76,6 +76,13 @@ export const JapaneseLanguagePack: LanguagePack = {
   sttCode: 'ja-JP',
   ttsCode: 'ja-JP',
   levelSystem: JLPT_LEVEL_SYSTEM,
+  supportsRubyAnnotations: true,
+  sampleTestPhrase: 'おはようございます。今日はいい天気ですね。',
+  packSizeBytes: 15728640,
+  packSizeFormatted: '15.0 MB',
+  packVersion: '1.0.4',
+  packTokenizerLabel: 'Kuromoji IPADIC (Web Worker)',
+  packSourceLabel: 'JMdict + KANJIDIC2 + Tatoeba',
   assetsManifest: ASSETS_MANIFEST,
 
   async tokenize(text: string): Promise<Token[]> {

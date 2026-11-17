@@ -30,6 +30,12 @@ import JSZip from 'jszip';
 import { useAppStore } from '../../store/useAppStore';
 import { logEvent } from '../../core/eventLogger';
 import {
+  DEFAULT_DEVELOPER_SETTINGS,
+  getDeveloperSettings,
+  type DeveloperSettings,
+} from '../../core/studySettings';
+import { LanguagePackManagerGrid } from './LanguagePackManagerGrid';
+import {
   Package,
   CheckCircle2,
   DownloadCloud,
@@ -61,6 +67,7 @@ import {
 export const LanguagePacksView: React.FC = () => {
   const { activeLanguageId, setActiveLanguage } = useAppStore();
   const allPacks = getAllLanguagePacks();
+  const [devSettings, setDevSettings] = useState<DeveloperSettings>(DEFAULT_DEVELOPER_SETTINGS);
 
   // Storage and asset states
   const [downloadedAssets, setDownloadedAssets] = useState<Record<string, DownloadedPackAsset>>({});
@@ -197,6 +204,9 @@ export const LanguagePacksView: React.FC = () => {
   const loadAllStatuses = useCallback(async () => {
     setIsLoadingMeta(true);
     try {
+      const loadedDev = await getDeveloperSettings();
+      setDevSettings(loadedDev);
+
       // 1. Downloaded assets records
       const items = await db.downloadedAssets.toArray();
       const map: Record<string, DownloadedPackAsset> = {};
@@ -762,23 +772,34 @@ export const LanguagePacksView: React.FC = () => {
               <Package className="w-6 h-6 text-indigo-600 dark:text-indigo-400" />
               <h1 className="text-2xl font-black tracking-tight">Language Packs</h1>
             </div>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-              Multi-pack coexistence, names dictionaries, kanji data, and isolated linguistic storage
+            <p className="text-xs text-[var(--text-muted)] mt-1">
+              {devSettings.showDeveloperTools
+                ? 'One-click language packs, multi-pack coexistence, kanji data, and isolated storage diagnostics'
+                : 'Download offline language packs and switch active languages'}
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
-            <span className="text-xs px-3 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 font-semibold border border-emerald-200 dark:border-emerald-800 flex items-center gap-1.5">
-              <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-              Multi-Pack Storage Active
-            </span>
-          </div>
+          {devSettings.showDeveloperTools && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs px-3 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 font-semibold border border-emerald-200 dark:border-emerald-800 flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                Developer Diagnostics Active
+              </span>
+            </div>
+          )}
         </div>
       </header>
 
       {/* Main pack list */}
       <main className="max-w-5xl w-full mx-auto p-4 sm:p-6 space-y-6 flex-1">
-        {allPacks.map((pack) => {
+        <LanguagePackManagerGrid
+          developerMode={devSettings.showDeveloperTools}
+          onPacksChanged={loadAllStatuses}
+        />
+
+        {devSettings.showDeveloperTools && (
+          <>
+            {allPacks.map((pack) => {
           const isActive = pack.id === activeLanguageId;
           const isJapanese = pack.id === 'ja';
 
@@ -1605,6 +1626,8 @@ export const LanguagePacksView: React.FC = () => {
             </p>
           </div>
         </section>
+          </>
+        )}
       </main>
 
       {/* Duplicate Fingerprint / Replace Confirmation Modal (Requirement 2) */}

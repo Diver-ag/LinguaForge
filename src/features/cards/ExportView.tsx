@@ -23,6 +23,7 @@ import type {
   AnkiExportWorkerResponse,
 } from './ankiExport.worker';
 import { useAppStore } from '../../store/useAppStore';
+import { packSupportsRuby } from '../../core/languagePack';
 import { getLanguagePack } from '../../packs/registry';
 import { FuriganaText } from '../../ui/FuriganaText';
 import {
@@ -126,6 +127,7 @@ interface ReadyDownloadArtifact {
 export const ExportView: React.FC = () => {
   const { activeLanguageId, furiganaMode } = useAppStore();
   const pack = getLanguagePack(activeLanguageId);
+  const supportsRuby = packSupportsRuby(pack);
 
   const [cards, setCards] = useState<CardItem[]>([]);
   const [decks, setDecks] = useState<DeckItem[]>([]);
@@ -977,20 +979,22 @@ export const ExportView: React.FC = () => {
 
               {/* Shared Furigana & Tag Options */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-[var(--border)] text-xs">
-                <div className="space-y-2">
-                  <label className="font-semibold text-[var(--text-secondary)] block">
-                    Furigana in export
-                  </label>
-                  <select
-                    value={furiganaFormat}
-                    onChange={(e) => setFuriganaFormat(e.target.value as FuriganaExportFormat)}
-                    className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text)] font-medium"
-                  >
-                    <option value="both">Both HTML (&lt;ruby&gt;) and Anki bracket format (漢字[かんじ])</option>
-                    <option value="html">HTML only (&lt;ruby&gt;漢字&lt;rt&gt;かんじ&lt;/rt&gt;&lt;/ruby&gt;)</option>
-                    <option value="anki">Anki format only (漢字[かんじ])</option>
-                  </select>
-                </div>
+                {supportsRuby && (
+                  <div className="space-y-2">
+                    <label className="font-semibold text-[var(--text-secondary)] block">
+                      {pack.id === 'zh' ? 'Pinyin ruby in export' : 'Furigana in export'}
+                    </label>
+                    <select
+                      value={furiganaFormat}
+                      onChange={(e) => setFuriganaFormat(e.target.value as FuriganaExportFormat)}
+                      className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text)] font-medium"
+                    >
+                      <option value="both">Both HTML (&lt;ruby&gt;) and Anki bracket format (漢字[かんじ])</option>
+                      <option value="html">HTML only (&lt;ruby&gt;漢字&lt;rt&gt;かんじ&lt;/rt&gt;&lt;/ruby&gt;)</option>
+                      <option value="anki">Anki format only (漢字[かんじ])</option>
+                    </select>
+                  </div>
+                )}
 
                 <div className="space-y-2">
                   <span className="font-semibold text-[var(--text-secondary)] block">
@@ -1004,7 +1008,15 @@ export const ExportView: React.FC = () => {
                         onChange={(e) => setIncludeAutoLevelTag(e.target.checked)}
                         className="accent-indigo-600"
                       />
-                      <span>Level (e.g. JLPT_N5)</span>
+                      <span>
+                        Level (e.g.{' '}
+                        {pack.id === 'ja'
+                          ? 'JLPT_N5'
+                          : pack.id === 'ko' || pack.id === 'zh'
+                          ? pack.levelSystem.defaultLevel.replace(/\s+/g, '_')
+                          : `CEFR_${pack.levelSystem.defaultLevel}`}
+                        )
+                      </span>
                     </label>
                     <label className="inline-flex items-center gap-1.5 cursor-pointer">
                       <input

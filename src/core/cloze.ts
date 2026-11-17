@@ -31,8 +31,8 @@ export interface AnkiClozeParseResult {
   unsupportedReason?: string;
 }
 
-const SENTENCE_TERMINATORS = /[。！？!?\n\r]/;
-const SENTENCE_PUNCTUATION = /[。！？!?]/;
+const SENTENCE_TERMINATORS = /[。！？.!?\n\r]/;
+const SENTENCE_PUNCTUATION = /[。！？.!?]/;
 
 /**
  * Extracts the surrounding sentence for a token whose character span in `fullText`

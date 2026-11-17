@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { db, type DocumentItem, type WordStatusType } from '../db/db';
-import { getLanguagePack } from '../packs/registry';
+import { ensureDefaultDeck } from '../db/cards';
+import { getInstalledLanguageIds } from '../core/packManager';
 import { logEvent } from '../core/eventLogger';
 import { DEFAULT_GEMINI_MODEL, getStoredModel, setStoredModel } from '../ai/gemini';
 
@@ -10,6 +11,7 @@ export type AppTheme = 'dark' | 'light' | 'system';
 
 interface AppState {
   activeLanguageId: string;
+  installedLanguageIds: string[];
   theme: AppTheme;
   furiganaMode: FuriganaMode;
   colorCodingEnabled: boolean;
@@ -24,6 +26,7 @@ interface AppState {
 
   // Actions
   setActiveLanguage: (langId: string) => Promise<void>;
+  refreshInstalledLanguages: () => Promise<void>;
   setTheme: (theme: AppTheme) => Promise<void>;
   setFuriganaMode: (mode: FuriganaMode) => Promise<void>;
   setColorCodingEnabled: (enabled: boolean) => Promise<void>;
@@ -39,6 +42,7 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set, get) => ({
   activeLanguageId: 'ja',
+  installedLanguageIds: ['ja'],
   theme: (typeof localStorage !== 'undefined' && (localStorage.getItem('linguaforge_theme') as AppTheme)) || 'system',
   furiganaMode: 'always',
   colorCodingEnabled: true,
@@ -51,10 +55,25 @@ export const useAppStore = create<AppState>((set, get) => ({
   geminiModel: DEFAULT_GEMINI_MODEL,
 
   setActiveLanguage: async (langId: string) => {
-    set({ activeLanguageId: langId });
+    const currentDoc = get().activeDocument;
+    if (currentDoc && currentDoc.languageId !== langId) {
+      set({ activeLanguageId: langId, activeDocument: null, activeDocumentId: null });
+    } else {
+      set({ activeLanguageId: langId });
+    }
     await db.settings.put({ key: 'activeLanguageId', value: langId });
+    await ensureDefaultDeck(langId).catch(() => {});
     await get().loadWordStatuses(langId);
     await logEvent('language_changed', { langId });
+  },
+
+  refreshInstalledLanguages: async () => {
+    try {
+      const ids = await getInstalledLanguageIds();
+      set({ installedLanguageIds: ids });
+    } catch {
+      // Keep existing state on error
+    }
   },
 
   setTheme: async (theme: AppTheme) => {
@@ -133,6 +152,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
 
       applyThemeToDocument(activeTheme);
+      await ensureDefaultDeck(activeLang).catch(() => {});
+      await get().refreshInstalledLanguages();
       await get().loadWordStatuses(activeLang);
     } catch (err) {
       console.error('Failed to load initial settings:', err);

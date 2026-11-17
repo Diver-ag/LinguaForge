@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { DictionaryEntry, LanguagePack, Token, KanjiDetail } from '../../core/languagePack';
+import { packSupportsRuby, type DictionaryEntry, type LanguagePack, type Token, type KanjiDetail } from '../../core/languagePack';
 import { type CardType, type ClozeData, type WordStatusType } from '../../db/db';
 import {
   addCardsForWord,
@@ -174,8 +174,16 @@ export const WordPopup: React.FC<WordPopupProps> = ({
   const lemma = activeEntryData?.word || entry?.word || token.baseForm || token.surface;
   const currentStatus = wordStatuses[lemma] || wordStatuses[token.surface] || 'new';
 
-  // Load dedicated kanji details from kanjiEntries table (independent from KANJIDIC)
+  const supportsRuby = packSupportsRuby(pack);
+
+  // Load dedicated kanji details from kanjiEntries table (Japanese only)
   useEffect(() => {
+    if (pack.id !== 'ja') {
+      setKanjiDetails([]);
+      setHasInstalledKanji(false);
+      setSelectedKanjiChar(null);
+      return;
+    }
     let isCancelled = false;
     async function loadKanji() {
       const searchTarget = `${lemma}${token.surface}`;
@@ -195,7 +203,7 @@ export const WordPopup: React.FC<WordPopupProps> = ({
     return () => {
       isCancelled = true;
     };
-  }, [lemma, token.surface]);
+  }, [pack.id, lemma, token.surface]);
 
   const rawReadings = activeEntryData?.readings || entry?.readings || (token.reading ? [token.reading] : []);
   // Filter out any readings that simply echo the kanji surface text without kana pronunciation
@@ -434,23 +442,35 @@ export const WordPopup: React.FC<WordPopupProps> = ({
         <div className="flex items-start justify-between gap-3">
           <div className="space-y-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              {/* Primary Dictionary Form with Ruby Furigana */}
+              {/* Primary Dictionary Form with optional Ruby Furigana / Pinyin */}
               <div className="text-2xl font-bold font-sans text-indigo-900 dark:text-indigo-200">
-                {token.furiganaSegments && token.furiganaSegments.length > 0 ? (
+                {supportsRuby && token.furiganaSegments && token.furiganaSegments.length > 0 ? (
                   <FuriganaText
                     segments={token.furiganaSegments}
                     furiganaMode="always"
                     rtClassName="text-xs font-semibold text-indigo-600 dark:text-indigo-400"
                   />
-                ) : (
+                ) : supportsRuby && validReadings[0] ? (
                   <FuriganaText
                     text={lemma}
                     reading={validReadings[0]}
                     furiganaMode="always"
                     rtClassName="text-xs font-semibold text-indigo-600 dark:text-indigo-400"
                   />
+                ) : (
+                  <span>{lemma}</span>
                 )}
               </div>
+
+              {validReadings.length === 0 && ttsSupported && (
+                <button
+                  onClick={() => handleSpeak(token.surface || lemma)}
+                  title="Pronounce with native voice"
+                  className="p-1.5 rounded-full hover:bg-indigo-100 dark:hover:bg-slate-800 text-indigo-600 dark:text-indigo-400 transition"
+                >
+                  <Volume2 className={`w-4 h-4 ${isSpeaking ? 'animate-bounce text-emerald-500' : ''}`} />
+                </button>
+              )}
 
               {/* Note if surface in text is a conjugated form */}
               {token.surface !== lemma && (
@@ -474,22 +494,22 @@ export const WordPopup: React.FC<WordPopupProps> = ({
                 {currentStatus}
               </span>
 
-              {/* JLPT Level: N5-N1 or "No level" */}
-              {level && /^N[1-5]$/i.test(level) ? (
+              {/* Word Level: JLPT (N5-N1), CEFR (A1-C2), TOPIK (1-6), HSK (1-6) */}
+              {level && level.trim() ? (
                 <span
                   className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
-                    level.toUpperCase() === 'N5'
+                    /^(N5|A1|TOPIK 1|HSK 1)$/i.test(level.trim())
                       ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800'
-                      : level.toUpperCase() === 'N4'
+                      : /^(N4|A2|TOPIK 2|HSK 2)$/i.test(level.trim())
                       ? 'bg-sky-100 text-sky-800 dark:bg-sky-950/80 dark:text-sky-300 border-sky-300 dark:border-sky-800'
-                      : level.toUpperCase() === 'N3'
+                      : /^(N3|B1|TOPIK 3|HSK 3)$/i.test(level.trim())
                       ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300 border-amber-300 dark:border-amber-800'
-                      : level.toUpperCase() === 'N2'
+                      : /^(N2|B2|TOPIK 4|HSK 4)$/i.test(level.trim())
                       ? 'bg-orange-100 text-orange-800 dark:bg-orange-950/80 dark:text-orange-300 border-orange-300 dark:border-orange-800'
                       : 'bg-rose-100 text-rose-800 dark:bg-rose-950/80 dark:text-rose-300 border-rose-300 dark:border-rose-800'
                   }`}
                 >
-                  {level.toUpperCase()}
+                  {level.trim().toUpperCase()}
                 </span>
               ) : (
                 <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 border border-slate-200 dark:border-slate-700">
@@ -539,8 +559,8 @@ export const WordPopup: React.FC<WordPopupProps> = ({
               </div>
             )}
 
-            {/* Hardest kanji estimate line: shown ONLY when word itself has no vocabulary level */}
-            {!hasWordJlptLevel && hardestKanjiLevel && (
+            {/* Hardest kanji estimate line: Japanese only, when word itself has no vocabulary level */}
+            {pack.id === 'ja' && !hasWordJlptLevel && hardestKanjiLevel && (
               <div className="text-[11px] text-slate-500 dark:text-slate-400 italic pt-1 flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
                 <span>Hardest kanji: <strong className="text-slate-700 dark:text-slate-300">{hardestKanjiLevel}</strong> (estimate)</span>
@@ -548,7 +568,7 @@ export const WordPopup: React.FC<WordPopupProps> = ({
             )}
 
             {/* Kanji levels row under word header: 1 chip per kanji */}
-            {kanjiDetails.length > 0 && (
+            {pack.id === 'ja' && kanjiDetails.length > 0 && (
               <div className="flex items-center gap-1.5 pt-1.5 flex-wrap">
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                   Kanji levels:
@@ -761,7 +781,7 @@ export const WordPopup: React.FC<WordPopupProps> = ({
           </button>
         )}
 
-        {(kanjiDetails.length > 0 || kanjiList.length > 0) && (
+        {pack.id === 'ja' && (kanjiDetails.length > 0 || kanjiList.length > 0) && (
           <button
             onClick={() => setActiveTab('kanji')}
             className={`flex items-center gap-1 py-2 px-3 border-b-2 font-semibold transition ${
@@ -1070,7 +1090,7 @@ export const WordPopup: React.FC<WordPopupProps> = ({
             </span>
           ) : (
             <span className="text-[10px] text-indigo-700 dark:text-indigo-300 font-semibold bg-indigo-50 dark:bg-indigo-950/60 px-2 py-0.5 rounded border border-indigo-200 dark:border-indigo-800">
-              Dictionary: JMdict
+              {pack.id === 'ja' ? 'Dictionary: JMdict' : `Dictionary: ${pack.name} Lexicon`}
             </span>
           )}
         </div>

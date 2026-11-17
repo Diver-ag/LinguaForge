@@ -34,7 +34,9 @@ import {
 import { downloadBackupFile, restoreFromBackup } from '../../core/backup';
 import { getRecentEvents, clearEventLogs } from '../../core/eventLogger';
 import { runTokenizerDiagnostics, type TokenizerDiagnosticsInfo } from '../../packs/japanese/tokenizer';
-import { getLanguagePack } from '../../packs/registry';
+import { packSupportsRuby } from '../../core/languagePack';
+import { getAllLanguagePacks, getLanguagePack } from '../../packs/registry';
+import { LanguagePackManagerGrid } from '../packs/LanguagePackManagerGrid';
 import {
   getBrowserOnlineStatus,
   getVoicesForLanguage,
@@ -74,11 +76,14 @@ import {
   Play,
   Square as StopIcon,
   WifiOff,
+  Globe,
 } from 'lucide-react';
 
 export const SettingsView: React.FC = () => {
   const {
     activeLanguageId,
+    installedLanguageIds,
+    setActiveLanguage,
     theme,
     setTheme,
     furiganaMode,
@@ -92,6 +97,13 @@ export const SettingsView: React.FC = () => {
     geminiModel,
     setGeminiModel,
   } = useAppStore();
+
+  const allPacks = getAllLanguagePacks();
+  const activePack = getLanguagePack(activeLanguageId);
+  const supportsRuby = packSupportsRuby(activePack);
+  const installedPacks = allPacks.filter(
+    (p) => installedLanguageIds.includes(p.id) || p.id === activeLanguageId
+  );
 
   // Study / FSRS settings state
   const [studySettings, setStudySettings] = useState<StudySettings>(DEFAULT_STUDY_SETTINGS);
@@ -464,6 +476,42 @@ export const SettingsView: React.FC = () => {
 
       {/* Main settings container */}
       <main className="max-w-4xl w-full mx-auto p-4 sm:p-6 space-y-6 flex-1">
+        {/* Language Packs Section */}
+        <section
+          aria-label="Language Packs"
+          className="p-6 rounded-3xl bg-[var(--surface)] border border-[var(--border)] shadow-xs space-y-5"
+        >
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-1">
+              <h2 className="font-bold text-base text-[var(--text)] flex items-center gap-2">
+                <Globe className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                <span>Language Packs</span>
+              </h2>
+              <p className="text-xs text-[var(--text-muted)]">
+                Switch active study language or download offline language packs.
+              </p>
+            </div>
+
+            <label className="flex items-center gap-2 text-xs font-semibold text-[var(--text-secondary)]">
+              <span>Active Language</span>
+              <select
+                value={activeLanguageId}
+                onChange={(e) => setActiveLanguage(e.target.value)}
+                aria-label="Settings active language"
+                className="min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-xs font-bold text-[var(--text)]"
+              >
+                {installedPacks.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.flagEmoji} {p.name} ({p.nativeName})
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <LanguagePackManagerGrid developerMode={devSettings.showDeveloperTools} compact />
+        </section>
+
         {/* Gemini API Key */}
         <div className="p-6 rounded-3xl bg-[var(--surface)] border border-[var(--border)] shadow-xs space-y-4">
           <div className="flex items-start justify-between gap-3">
@@ -589,14 +637,15 @@ export const SettingsView: React.FC = () => {
           </div>
         </div>
 
-        {/* Tokenizer Diagnostics Section */}
-        <div className="p-6 rounded-3xl bg-[var(--surface)] border border-[var(--border)] shadow-xs space-y-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <Cpu className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                <h2 className="font-bold text-base text-[var(--text)]">Tokenizer Diagnostics</h2>
-              </div>
+        {/* Tokenizer Diagnostics Section (Developer Options + Japanese only) */}
+        {devSettings.showDeveloperTools && activeLanguageId === 'ja' && (
+          <div className="p-6 rounded-3xl bg-[var(--surface)] border border-[var(--border)] shadow-xs space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <Cpu className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                  <h2 className="font-bold text-base text-[var(--text)]">Tokenizer Diagnostics</h2>
+                </div>
               <p className="text-xs text-[var(--text-muted)] max-w-xl leading-relaxed">
                 Health status of the Japanese morphological tokenizer web worker and binary dictionary files.
               </p>
@@ -718,6 +767,7 @@ export const SettingsView: React.FC = () => {
             </div>
           )}
         </div>
+        )}
 
         {/* Display & Reader Preferences */}
         <div className="p-6 rounded-3xl bg-[var(--surface)] border border-[var(--border)] shadow-xs space-y-6">
@@ -752,28 +802,30 @@ export const SettingsView: React.FC = () => {
               </div>
             </div>
 
-            {/* Furigana Mode */}
-            <div className="space-y-2">
-              <label className="text-xs font-semibold text-[var(--text-secondary)] block">
-                Default Furigana Display
-              </label>
-              <div className="grid grid-cols-3 gap-2">
-                {(['always', 'hover', 'never'] as FuriganaMode[]).map((mode) => (
-                  <button
-                    key={mode}
-                    onClick={() => setFuriganaMode(mode)}
-                    className={`py-2 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition ${
-                      furiganaMode === mode
-                        ? 'border-indigo-600 bg-[var(--accent-subtle)] text-[var(--accent-text)] dark:border-indigo-500 shadow-xs'
-                        : 'border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--surface-muted)]'
-                    }`}
-                  >
-                    <Eye className="w-3.5 h-3.5" />
-                    <span className="capitalize">{mode}</span>
-                  </button>
-                ))}
+            {/* Furigana / Pinyin Mode (only for ruby-supporting languages) */}
+            {supportsRuby && (
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-[var(--text-secondary)] block">
+                  {activeLanguageId === 'zh' ? 'Default Pinyin Display' : 'Default Furigana Display'}
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {(['always', 'hover', 'never'] as FuriganaMode[]).map((mode) => (
+                    <button
+                      key={mode}
+                      onClick={() => setFuriganaMode(mode)}
+                      className={`py-2 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition ${
+                        furiganaMode === mode
+                          ? 'border-indigo-600 bg-[var(--accent-subtle)] text-[var(--accent-text)] dark:border-indigo-500 shadow-xs'
+                          : 'border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--surface-muted)]'
+                      }`}
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      <span className="capitalize">{mode}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Font Size */}
             <div className="space-y-2">
@@ -816,49 +868,51 @@ export const SettingsView: React.FC = () => {
               </button>
             </div>
 
-            {/* JLPT level underline coloring toggle (off by default) */}
-            <div className="space-y-2 sm:col-span-2 pt-2 border-t border-[var(--border)]">
-              <div className="flex items-center justify-between">
-                <div>
-                  <label className="text-xs font-semibold text-[var(--text)] block">
-                    Word-Underline Coloring by JLPT Level
-                  </label>
-                  <p className="text-[11px] text-[var(--text-muted)]">
-                    Highlights words in the Reader with color-coded underlines according to their imported JLPT difficulty level (off by default).
-                  </p>
+            {/* JLPT level underline coloring toggle (Japanese only, off by default) */}
+            {activeLanguageId === 'ja' && (
+              <div className="space-y-2 sm:col-span-2 pt-2 border-t border-[var(--border)]">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="text-xs font-semibold text-[var(--text)] block">
+                      Word-Underline Coloring by JLPT Level
+                    </label>
+                    <p className="text-[11px] text-[var(--text-muted)]">
+                      Highlights words in the Reader with color-coded underlines according to their imported JLPT difficulty level (off by default).
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setJlptUnderlineEnabled(!jlptUnderlineEnabled)}
+                    className={`px-4 py-1.5 rounded-xl border text-xs font-bold transition shrink-0 ${
+                      jlptUnderlineEnabled
+                        ? 'border-indigo-600 bg-[var(--accent-subtle)] text-[var(--accent-text)] dark:border-indigo-500 shadow-xs'
+                        : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-muted)]'
+                    }`}
+                  >
+                    {jlptUnderlineEnabled ? 'ON' : 'OFF'}
+                  </button>
                 </div>
-                <button
-                  onClick={() => setJlptUnderlineEnabled(!jlptUnderlineEnabled)}
-                  className={`px-4 py-1.5 rounded-xl border text-xs font-bold transition shrink-0 ${
-                    jlptUnderlineEnabled
-                      ? 'border-indigo-600 bg-[var(--accent-subtle)] text-[var(--accent-text)] dark:border-indigo-500 shadow-xs'
-                      : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-muted)]'
-                  }`}
-                >
-                  {jlptUnderlineEnabled ? 'ON' : 'OFF'}
-                </button>
-              </div>
 
-              {/* JLPT Level color legend preview */}
-              <div className="flex items-center gap-2 pt-1 flex-wrap text-[11px]">
-                <span className="text-[var(--text-muted)] text-[10px] font-semibold uppercase">Preview:</span>
-                <span className="px-2 py-0.5 rounded-md font-bold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 underline decoration-emerald-500 decoration-2 underline-offset-4">
-                  N5 (Beginner)
-                </span>
-                <span className="px-2 py-0.5 rounded-md font-bold bg-sky-50 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300 border border-sky-200 dark:border-sky-800 underline decoration-sky-500 decoration-2 underline-offset-4">
-                  N4 (Elementary)
-                </span>
-                <span className="px-2 py-0.5 rounded-md font-bold bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-200 dark:border-amber-800 underline decoration-amber-500 decoration-2 underline-offset-4">
-                  N3 (Intermediate)
-                </span>
-                <span className="px-2 py-0.5 rounded-md font-bold bg-orange-50 text-orange-700 dark:bg-orange-950/60 dark:text-orange-300 border border-orange-200 dark:border-orange-800 underline decoration-orange-500 decoration-2 underline-offset-4">
-                  N2 (Upper Intermediate)
-                </span>
-                <span className="px-2 py-0.5 rounded-md font-bold bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300 border border-rose-200 dark:border-rose-800 underline decoration-rose-500 decoration-2 underline-offset-4">
-                  N1 (Advanced)
-                </span>
+                {/* JLPT Level color legend preview */}
+                <div className="flex items-center gap-2 pt-1 flex-wrap text-[11px]">
+                  <span className="text-[var(--text-muted)] text-[10px] font-semibold uppercase">Preview:</span>
+                  <span className="px-2 py-0.5 rounded-md font-bold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 underline decoration-emerald-500 decoration-2 underline-offset-4">
+                    N5 (Beginner)
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md font-bold bg-sky-50 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300 border border-sky-200 dark:border-sky-800 underline decoration-sky-500 decoration-2 underline-offset-4">
+                    N4 (Elementary)
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md font-bold bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-200 dark:border-amber-800 underline decoration-amber-500 decoration-2 underline-offset-4">
+                    N3 (Intermediate)
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md font-bold bg-orange-50 text-orange-700 dark:bg-orange-950/60 dark:text-orange-300 border border-orange-200 dark:border-orange-800 underline decoration-orange-500 decoration-2 underline-offset-4">
+                    N2 (Upper Intermediate)
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md font-bold bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300 border border-rose-200 dark:border-rose-800 underline decoration-rose-500 decoration-2 underline-offset-4">
+                    N1 (Advanced)
+                  </span>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
 
@@ -1239,11 +1293,7 @@ export const SettingsView: React.FC = () => {
             isOnline,
           });
           const samplePhrase =
-            activePack.id === 'ja'
-              ? 'おはようございます。今日はいい天気ですね。'
-              : activePack.id === 'es'
-              ? 'Buenos días. Hoy hace buen tiempo.'
-              : 'Hello, this is a speech synthesis test.';
+            activePack.sampleTestPhrase || 'Hello, this is a speech synthesis test.';
 
           const handleTestSpeech = () => {
             if (isTestingSpeech) {
@@ -1636,19 +1686,19 @@ export const SettingsView: React.FC = () => {
           </button>
         </div>
 
-        {/* Developer Tools Toggle & Section */}
+        {/* Developer Options Toggle & Section */}
         <section
-          aria-label="Developer Settings"
+          aria-label="Developer Options"
           className="p-6 rounded-3xl bg-[var(--surface)] border border-[var(--border)] shadow-xs space-y-4"
         >
           <div className="flex items-center justify-between gap-3">
             <div className="space-y-0.5">
               <h2 className="font-bold text-base text-[var(--text)] flex items-center gap-2">
                 <Wrench className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                <span>Developer</span>
+                <span>Developer Options</span>
               </h2>
               <p className="text-xs text-[var(--text-muted)]">
-                Optional synthetic review history tools for previewing charts without affecting real cards or backups.
+                Reveals tokenizer diagnostics, pack sub-pack/source details, manifest URL overrides, and synthetic chart preview tools.
               </p>
             </div>
 
@@ -1659,13 +1709,13 @@ export const SettingsView: React.FC = () => {
                   showDeveloperTools: !devSettings.showDeveloperTools,
                 })
               }
-              className={`px-3.5 py-2 rounded-xl border text-xs font-bold transition shrink-0 ${
+              className={`min-h-[40px] px-3.5 py-2 rounded-xl border text-xs font-bold transition shrink-0 ${
                 devSettings.showDeveloperTools
                   ? 'border-indigo-600 bg-[var(--accent-subtle)] text-[var(--accent-text)]'
                   : 'border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--surface-muted)]'
               }`}
             >
-              {devSettings.showDeveloperTools ? 'Show developer tools: ON' : 'Show developer tools'}
+              {devSettings.showDeveloperTools ? 'Developer Options: ON' : 'Developer Options: OFF'}
             </button>
           </div>
 

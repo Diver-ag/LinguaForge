@@ -14,8 +14,10 @@ import {
   deleteCards,
   getDefaultDeckId,
 } from '../../db/cards';
+import { packSupportsRuby } from '../../core/languagePack';
 import { getLanguagePack } from '../../packs/registry';
 import { buildFurigana } from '../../packs/japanese/kanaUtils';
+import { buildMandarinPinyinSegments } from '../../packs/multilingualPack';
 import { RATING_LABELS, STATE_LABELS, formatIntervalText } from '../../core/fsrsScheduler';
 import {
   formatClozeHint,
@@ -400,21 +402,24 @@ export const CardEditModal: React.FC<CardEditModalProps> = ({
         return;
       }
 
-      let nextFurigana = card?.furiganaSegments;
-      if (!card || nextWord !== card.word || nextReading !== card.reading) {
-        nextFurigana = buildFurigana(nextWord, nextReading);
+      const supportsRuby = packSupportsRuby(pack);
+      let nextFurigana = supportsRuby ? card?.furiganaSegments : undefined;
+      if (supportsRuby && (!card || nextWord !== card.word || nextReading !== card.reading)) {
+        nextFurigana =
+          languageId === 'zh'
+            ? buildMandarinPinyinSegments(nextWord).furiganaSegments
+            : buildFurigana(nextWord, nextReading);
       }
 
-      let nextSentenceFurigana = card?.sentenceFuriganaSegments;
-      if (!card || trimmedSentence !== (card.sentence || '')) {
+      let nextSentenceFurigana = supportsRuby ? card?.sentenceFuriganaSegments : undefined;
+      if (supportsRuby && (!card || trimmedSentence !== (card.sentence || ''))) {
         if (!trimmedSentence) {
           nextSentenceFurigana = undefined;
         } else {
           try {
             const toks = await pack.tokenize(trimmedSentence);
-            nextSentenceFurigana = toks.flatMap(
-              (t) => t.furiganaSegments || [{ text: t.surface }]
-            );
+            const segs = toks.flatMap((t) => t.furiganaSegments || [{ text: t.surface }]);
+            nextSentenceFurigana = segs.some((s) => Boolean(s.ruby)) ? segs : undefined;
           } catch {
             nextSentenceFurigana = undefined;
           }

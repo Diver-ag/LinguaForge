@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { db, type DocumentItem } from '../../db/db';
 import { useAppStore } from '../../store/useAppStore';
 import { getLanguagePack } from '../../packs/registry';
+import { STARTER_SAMPLE_DOCS } from '../../packs/starterData';
 import { parseUploadedFile } from '../reader/fileParsers';
 import { logEvent } from '../../core/eventLogger';
 import {
@@ -106,12 +107,36 @@ export const LibraryView: React.FC = () => {
     setIsLoading(true);
     try {
       let docs = await db.documents.where('languageId').equals(activeLanguageId).reverse().toArray();
-      // If first time and no docs, seed sample documents
-      if (docs.length === 0 && activeLanguageId === 'ja') {
-        for (const item of SAMPLE_DOCS) {
-          await db.documents.add(item);
+      // Seed built-in sample documents once per language when empty
+      if (docs.length === 0) {
+        const seedFlagKey = `seededSampleDocs_${activeLanguageId}`;
+        const alreadySeeded = await db.settings.get(seedFlagKey);
+        if (!alreadySeeded) {
+          if (activeLanguageId === 'ja') {
+            for (const item of SAMPLE_DOCS) {
+              await db.documents.add(item);
+            }
+            await db.settings.put({ key: seedFlagKey, value: true });
+          } else {
+            const starterDocs = STARTER_SAMPLE_DOCS[activeLanguageId] || [];
+            if (starterDocs.length > 0) {
+              const now = Date.now();
+              for (let idx = 0; idx < starterDocs.length; idx++) {
+                const s = starterDocs[idx];
+                await db.documents.add({
+                  title: s.title,
+                  content: s.content,
+                  rawType: 'paste',
+                  languageId: activeLanguageId,
+                  createdAt: now - (starterDocs.length - idx) * 60_000,
+                  updatedAt: now - (starterDocs.length - idx) * 60_000,
+                });
+              }
+              await db.settings.put({ key: seedFlagKey, value: true });
+            }
+          }
+          docs = await db.documents.where('languageId').equals(activeLanguageId).reverse().toArray();
         }
-        docs = await db.documents.where('languageId').equals(activeLanguageId).reverse().toArray();
       }
       setDocuments(docs);
       setIsLoading(false);
@@ -269,20 +294,38 @@ export const LibraryView: React.FC = () => {
             <div className="space-y-1">
               <h3 className="font-bold text-base text-[var(--text)]">No documents found</h3>
               <p className="text-xs text-[var(--text-muted)] max-w-sm mx-auto">
-                Paste an article, upload a Japanese text/epub/subtitle file, or click below to restore sample materials.
+                Paste an article, upload a {pack.name} text, ebook, or subtitle file, or restore starter reading materials.
               </p>
             </div>
-            <button
-              onClick={async () => {
-                for (const item of SAMPLE_DOCS) {
-                  await db.documents.add(item);
-                }
-                await loadDocuments();
-              }}
-              className="px-4 py-2 bg-indigo-600 text-white text-xs font-bold rounded-xl hover:bg-indigo-700 transition"
-            >
-              Load Sample Japanese Stories
-            </button>
+            {(activeLanguageId === 'ja' || (STARTER_SAMPLE_DOCS[activeLanguageId]?.length ?? 0) > 0) && (
+              <button
+                onClick={async () => {
+                  if (activeLanguageId === 'ja') {
+                    for (const item of SAMPLE_DOCS) {
+                      await db.documents.add(item);
+                    }
+                  } else {
+                    const starterDocs = STARTER_SAMPLE_DOCS[activeLanguageId] || [];
+                    const now = Date.now();
+                    for (let idx = 0; idx < starterDocs.length; idx++) {
+                      const s = starterDocs[idx];
+                      await db.documents.add({
+                        title: s.title,
+                        content: s.content,
+                        rawType: 'paste',
+                        languageId: activeLanguageId,
+                        createdAt: now - (starterDocs.length - idx) * 60_000,
+                        updatedAt: now - (starterDocs.length - idx) * 60_000,
+                      });
+                    }
+                  }
+                  await loadDocuments();
+                }}
+                className="px-4 py-2 bg-indigo-600 text-white text-xs font-bold rounded-xl hover:bg-indigo-700 transition"
+              >
+                Load Sample {pack.name} Texts
+              </button>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -381,7 +424,7 @@ export const LibraryView: React.FC = () => {
                   </label>
                   <input
                     type="text"
-                    placeholder="e.g. Japanese news article, dialogue, blog post..."
+                    placeholder={`e.g. ${pack.name} news article, dialogue, blog post...`}
                     value={pasteTitle}
                     onChange={(e) => setPasteTitle(e.target.value)}
                     className="w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text)] text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -390,11 +433,11 @@ export const LibraryView: React.FC = () => {
 
                 <div>
                   <label className="text-xs font-semibold text-[var(--text-secondary)] block mb-1">
-                    Japanese Content
+                    {pack.name} Content
                   </label>
                   <textarea
                     rows={8}
-                    placeholder="Paste or type Japanese text here..."
+                    placeholder={`Paste or type ${pack.name} text here...`}
                     value={pasteContent}
                     onChange={(e) => setPasteContent(e.target.value)}
                     className="w-full p-3 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text)] text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-sans"

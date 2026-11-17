@@ -115,6 +115,20 @@ export interface LanguagePack {
   levelSystem: DifficultyLevelSystem;
   assetsManifest: PackAssetManifestItem[];
 
+  /** Whether this language renders ruby/furigana annotations above words (e.g. Japanese, Mandarin). */
+  supportsRubyAnnotations?: boolean;
+  /** Native test phrase used in Settings -> Speech voice testing. */
+  sampleTestPhrase?: string;
+  /** Default total pack download size in bytes for one-click install UI. */
+  packSizeBytes?: number;
+  /** Human-readable default download size (e.g. "4.8 MB"). */
+  packSizeFormatted?: string;
+  /** Current bundled/manifest version string. */
+  packVersion?: string;
+  /** Technical summary shown only when Developer Options is enabled. */
+  packTokenizerLabel?: string;
+  packSourceLabel?: string;
+
   // Core functions
   tokenize(text: string): Promise<Token[]>;
   lookup(word: string, lemma?: string): Promise<DictionaryEntry | null>;
@@ -124,4 +138,12 @@ export interface LanguagePack {
   getReading(token: Token | string): { displayReading?: string; furiganaSegments?: FuriganaSegment[]; romanization?: string };
   lookupKanji?(character: string): Promise<KanjiDetail | null>;
   lookupGrammar(query: string): Promise<GrammarPoint[]>;
+}
+
+export function packSupportsRuby(pack: Pick<LanguagePack, 'id' | 'supportsRubyAnnotations'> | undefined | null): boolean {
+  if (!pack) return true;
+  if (typeof pack.supportsRubyAnnotations === 'boolean') {
+    return pack.supportsRubyAnnotations;
+  }
+  return pack.id === 'ja' || pack.id === 'zh';
 }

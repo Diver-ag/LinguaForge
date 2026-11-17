@@ -295,6 +295,19 @@ export interface DownloadedPackAsset {
   installedAt: number;
 }
 
+export interface InstalledLanguagePackRecord {
+  languageId: string;
+  version: string;
+  latestManifestVersion?: string;
+  installedAt: number;
+  updatedAt: number;
+  source: 'starter' | 'cloud' | 'custom' | 'bundled';
+  entryCount: number;
+  sizeBytes: number;
+  subpacks?: string[];
+  manifestUrl?: string;
+}
+
 export class LinguaForgeDatabase extends Dexie {
   documents!: Table<DocumentItem, number>;
   wordStatuses!: Table<WordStatusItem, number>;
@@ -312,6 +325,7 @@ export class LinguaForgeDatabase extends Dexie {
   importedData!: Table<ImportedDataItem, number>;
   imports!: Table<ImportRecord, string>;
   kanjiEntries!: Table<KanjiEntryItem, string>;
+  installedPacks!: Table<InstalledLanguagePackRecord, string>;
 
   constructor() {
     super('LinguaForgeDB');
@@ -529,6 +543,34 @@ export class LinguaForgeDatabase extends Dexie {
       cards:
         'id, deckId, languageId, cardType, word, lemma, [lemma+reading+cardType], [languageId+deckId], level, sourceDocId, *tags, suspended, buried, buriedUntil, state, due, exportedAt, createdAt, updatedAt',
     });
+
+    this.version(13)
+      .stores({
+        installedPacks: 'languageId, installedAt, updatedAt, version',
+      })
+      .upgrade(async (trans) => {
+        const installedTable = trans.table('installedPacks');
+        const existingJa = await installedTable.get('ja').catch(() => null);
+        if (!existingJa) {
+          const jmdictCount = await trans
+            .table('jmdictEntries')
+            .where('languageCode')
+            .equals('ja')
+            .count()
+            .catch(() => 0);
+          const now = Date.now();
+          await installedTable.put({
+            languageId: 'ja',
+            version: '1.0.4',
+            installedAt: now,
+            updatedAt: now,
+            source: jmdictCount > 0 ? 'cloud' : 'bundled',
+            entryCount: jmdictCount,
+            sizeBytes: jmdictCount > 0 ? 15728640 : 0,
+            subpacks: jmdictCount > 0 ? ['jmdict-core'] : ['bundled-starter'],
+          });
+        }
+      });
   }
 }
 
@@ -857,13 +899,14 @@ export async function reindexEnglishGlosses(
 export async function clearAllLanguageData(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.jmdictEntries, db.dictionaryMeta, db.importedData, db.imports, db.downloadedAssets],
+    [db.jmdictEntries, db.dictionaryMeta, db.importedData, db.imports, db.downloadedAssets, db.installedPacks],
     async () => {
       await db.jmdictEntries.clear();
       await db.dictionaryMeta.clear();
       await db.importedData.clear();
       await db.imports.clear();
       await db.downloadedAssets.clear();
+      await db.installedPacks.clear();
     }
   );
 

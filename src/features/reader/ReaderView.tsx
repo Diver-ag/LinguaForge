@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { DictionaryEntry, LanguagePack, Token } from '../../core/languagePack';
+import { packSupportsRuby, type DictionaryEntry, type Token } from '../../core/languagePack';
 import { db, type WordStatusType } from '../../db/db';
 import { addCardsForWord } from '../../db/cards';
 import { getLanguagePack } from '../../packs/registry';
@@ -45,6 +45,7 @@ export const ReaderView: React.FC = () => {
   } = useAppStore();
 
   const pack = useMemo(() => getLanguagePack(activeLanguageId), [activeLanguageId]);
+  const supportsRuby = packSupportsRuby(pack);
 
   // Loading & token states
   const [tokens, setTokens] = useState<Token[]>([]);
@@ -120,10 +121,14 @@ export const ReaderView: React.FC = () => {
     };
   }, [activeDocument, pack]);
 
-  // Resolve JLPT levels for unique words in document
+  // Resolve JLPT levels for unique words in Japanese documents
   useEffect(() => {
     let isCancelled = false;
     async function resolveWordLevels() {
+      if (activeLanguageId !== 'ja') {
+        setWordJlptLevels({});
+        return;
+      }
       if (!tokens || tokens.length === 0) return;
       const uniqueKeys = Array.from(
         new Set(tokens.filter((t) => t.isWord).map((t) => t.baseForm || t.surface))
@@ -165,7 +170,7 @@ export const ReaderView: React.FC = () => {
     return () => {
       isCancelled = true;
     };
-  }, [tokens]);
+  }, [tokens, activeLanguageId]);
 
   // Helper to extract surrounding sentence
   const extractSurroundingSentence = useCallback((fullText: string, charIndex: number): string => {
@@ -418,26 +423,28 @@ export const ReaderView: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-1.5 sm:gap-2">
-            {/* Furigana toggle */}
-            <button
-              onClick={() => {
-                const next: FuriganaMode =
-                  furiganaMode === 'always' ? 'hover' : furiganaMode === 'hover' ? 'never' : 'always';
-                setFuriganaMode(next);
-              }}
-              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition ${
-                furiganaMode === 'always'
-                  ? 'bg-indigo-50 dark:bg-indigo-950/70 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-800'
-                  : furiganaMode === 'hover'
-                  ? 'bg-amber-50 dark:bg-amber-950/70 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800'
-                  : 'bg-slate-100 dark:bg-slate-800 text-slate-500 border-transparent'
-              }`}
-              title="Furigana Display Mode"
-            >
-              <Eye className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Furigana:</span>
-              <span className="capitalize">{furiganaMode}</span>
-            </button>
+            {/* Furigana / Pinyin ruby toggle (shown only for languages supporting ruby annotations) */}
+            {supportsRuby && (
+              <button
+                onClick={() => {
+                  const next: FuriganaMode =
+                    furiganaMode === 'always' ? 'hover' : furiganaMode === 'hover' ? 'never' : 'always';
+                  setFuriganaMode(next);
+                }}
+                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition ${
+                  furiganaMode === 'always'
+                    ? 'bg-indigo-50 dark:bg-indigo-950/70 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-800'
+                    : furiganaMode === 'hover'
+                    ? 'bg-amber-50 dark:bg-amber-950/70 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-500 border-transparent'
+                }`}
+                title={pack.id === 'zh' ? 'Pinyin Display Mode' : 'Furigana Display Mode'}
+              >
+                <Eye className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">{pack.id === 'zh' ? 'Pinyin:' : 'Furigana:'}</span>
+                <span className="capitalize">{furiganaMode}</span>
+              </button>
+            )}
 
             {/* Font size toggle */}
             <button
@@ -503,7 +510,7 @@ export const ReaderView: React.FC = () => {
                 </div>
               )}
 
-              {getTokenizerWarning() && (
+              {activeLanguageId === 'ja' && getTokenizerWarning() && (
                 <div className="flex items-center justify-between gap-2 text-xs text-amber-800 dark:text-amber-200 bg-amber-50 dark:bg-amber-950/60 px-3.5 py-1.5 rounded-2xl border border-amber-200 dark:border-amber-800 w-full">
                   <div className="flex items-center gap-2 min-w-0">
                     <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
@@ -575,9 +582,9 @@ export const ReaderView: React.FC = () => {
                 const isSelected = activeToken?.id === token.id;
                 const tokenJlpt = wordJlptLevels[lemmaOrSurface] || wordJlptLevels[token.surface] || token.level;
 
-                // JLPT Level Underline (when enabled via Settings)
+                // JLPT Level Underline (Japanese only, when enabled via Settings)
                 let jlptUnderlineStyle = '';
-                if (jlptUnderlineEnabled && tokenJlpt) {
+                if (activeLanguageId === 'ja' && jlptUnderlineEnabled && tokenJlpt) {
                   if (tokenJlpt === 'N5') {
                     jlptUnderlineStyle = 'underline decoration-emerald-500 decoration-2 underline-offset-4';
                   } else if (tokenJlpt === 'N4') {

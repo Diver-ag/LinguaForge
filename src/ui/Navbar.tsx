@@ -1,7 +1,7 @@
 import React from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useAppStore } from '../store/useAppStore';
-import { getAllLanguagePacks, getLanguagePack } from '../packs/registry';
+import { getAllLanguagePacks } from '../packs/registry';
 import { PWAInstallButton } from './PWAInstallButton';
 import { useOnlineStatus } from './useOnlineStatus';
 import {
@@ -22,9 +22,12 @@ import {
 
 export const Navbar: React.FC = () => {
   const location = useLocation();
-  const { activeLanguageId, setActiveLanguage, theme, setTheme } = useAppStore();
-  const pack = getLanguagePack(activeLanguageId);
+  const navigate = useNavigate();
+  const { activeLanguageId, installedLanguageIds, setActiveLanguage, theme, setTheme } = useAppStore();
   const allPacks = getAllLanguagePacks();
+  const installedPacks = allPacks.filter(
+    (p) => installedLanguageIds.includes(p.id) || p.id === activeLanguageId
+  );
   const isOnline = useOnlineStatus();
 
   const isDark =
@@ -101,14 +104,25 @@ export const Navbar: React.FC = () => {
             <div className="relative">
               <select
                 value={activeLanguageId}
-                onChange={(e) => setActiveLanguage(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === '__manage__') {
+                    navigate('/packs');
+                  } else {
+                    setActiveLanguage(val);
+                  }
+                }}
+                aria-label="Active language"
                 className="appearance-none pl-3 pr-8 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-xs font-bold text-[var(--text)] focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
               >
-                {allPacks.map((p) => (
+                {installedPacks.map((p) => (
                   <option key={p.id} value={p.id} className="bg-[var(--surface)] text-[var(--text)]">
                     {p.flagEmoji} {p.name}
                   </option>
                 ))}
+                <option value="__manage__" className="bg-[var(--surface)] text-[var(--accent-text)] font-bold">
+                  + Manage Language Packs...
+                </option>
               </select>
               <div className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-[var(--text-muted)]">
                 ▼
