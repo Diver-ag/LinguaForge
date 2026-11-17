@@ -50,6 +50,8 @@ const CARD_TYPE_LABELS: Record<CardType, string> = {
   word_to_meaning: 'Word → Meaning',
   meaning_to_word: 'Meaning → Word',
   reading: 'Reading',
+  cloze: 'Cloze',
+  listening: 'Listening',
 };
 
 const DEFAULT_CSV_COLUMNS: CsvColumnKey[] = [
@@ -86,6 +88,7 @@ const ALL_CSV_COLUMNS: CsvColumnKey[] = [
   'notes',
   'deck',
   'cardType',
+  'clozeText',
   'tags',
 ];
 
@@ -133,7 +136,7 @@ export const ExportView: React.FC = () => {
   // Filters
   const [selectedDeckIds, setSelectedDeckIds] = useState<Set<string>>(new Set());
   const [selectedCardTypes, setSelectedCardTypes] = useState<Set<CardType>>(
-    new Set(['word_to_meaning', 'meaning_to_word', 'reading'])
+    new Set(['word_to_meaning', 'meaning_to_word', 'reading', 'cloze', 'listening'])
   );
   const [tagFilter, setTagFilter] = useState<string>('all');
   const [levelFilter, setLevelFilter] = useState<string>('all');
@@ -287,6 +290,7 @@ export const ExportView: React.FC = () => {
       useSubdeckPrefix,
       subdeckRootName: 'LinguaForge',
       languageName: pack.name,
+      ttsLangCode: pack.ttsCode,
       includeAutoLevelTag,
       includeAutoSourceTag,
       includeAutoCardTypeTag,
@@ -297,6 +301,7 @@ export const ExportView: React.FC = () => {
     furiganaFormat,
     useSubdeckPrefix,
     pack.name,
+    pack.ttsCode,
     includeAutoLevelTag,
     includeAutoSourceTag,
     includeAutoCardTypeTag,
@@ -324,7 +329,9 @@ export const ExportView: React.FC = () => {
 
   const resetFilters = () => {
     setSelectedDeckIds(new Set(decks.map((d) => d.id)));
-    setSelectedCardTypes(new Set(['word_to_meaning', 'meaning_to_word', 'reading']));
+    setSelectedCardTypes(
+      new Set(['word_to_meaning', 'meaning_to_word', 'reading', 'cloze', 'listening'])
+    );
     setTagFilter('all');
     setLevelFilter('all');
     setSourceFilter('all');
@@ -767,8 +774,15 @@ export const ExportView: React.FC = () => {
                   Card types
                 </span>
                 <div className="flex flex-wrap gap-2">
-                  {(['word_to_meaning', 'meaning_to_word', 'reading'] as CardType[]).map(
-                    (ct) => {
+                  {(
+                    [
+                      'word_to_meaning',
+                      'meaning_to_word',
+                      'reading',
+                      'cloze',
+                      'listening',
+                    ] as CardType[]
+                  ).map((ct) => {
                       const checked = selectedCardTypes.has(ct);
                       return (
                         <button
@@ -1035,6 +1049,18 @@ export const ExportView: React.FC = () => {
                       })}
                     </code>
                   </div>
+                  {exportPlanPreview.hasListeningCards && (
+                    <div className="p-3 rounded-xl bg-[var(--surface)] border border-indigo-500/30 flex items-start gap-2 text-[11px] text-[var(--text-secondary)]">
+                      <Info className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
+                      <span>
+                        Listening cards export with Anki&apos;s{' '}
+                        <code className="font-mono text-[var(--text)]">
+                          {`{{tts ${(pack.ttsCode || 'ja-JP').replace(/-/g, '_')}:AudioText}}`}
+                        </code>{' '}
+                        template tag. Audio in Anki uses the device&apos;s installed TTS voices rather than bundled audio files.
+                      </span>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="p-4 rounded-2xl bg-[var(--surface-muted)]/70 border border-[var(--border)] space-y-4 text-xs">
@@ -1231,7 +1257,7 @@ export const ExportView: React.FC = () => {
                     <strong className="text-[var(--text)]">Exported as New cards:</strong> All cards enter Anki in the <em>New</em> queue with empty review history so Anki schedules them cleanly from scratch.
                   </p>
                   <p>
-                    <strong className="text-[var(--text)]">Safe re-export updates:</strong> Notes use deterministic GUIDs and a fixed <code className="font-mono">LinguaForge Vocabulary</code> note type ID, so re-importing updated cards in Anki updates existing notes instead of duplicating them.
+                    <strong className="text-[var(--text)]">Safe re-export updates:</strong> Notes use deterministic GUIDs and fixed note type IDs (<code className="font-mono">LinguaForge Vocabulary</code> and <code className="font-mono">LinguaForge Cloze</code>), so re-importing updated cards in Anki updates existing notes instead of duplicating them.
                   </p>
                 </div>
               </div>

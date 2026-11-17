@@ -6,6 +6,7 @@ import { addCardsForWord } from '../../db/cards';
 import { getLanguagePack } from '../../packs/registry';
 import { useAppStore, type FuriganaMode, type FontSize } from '../../store/useAppStore';
 import { getTokenizerWarning } from '../../packs/japanese/tokenizer';
+import { extractSentenceWithOffsets } from '../../core/cloze';
 import { WordPopup } from './WordPopup';
 import { TextStatsModal } from './TextStatsModal';
 import { FuriganaText } from '../../ui/FuriganaText';
@@ -54,6 +55,11 @@ export const ReaderView: React.FC = () => {
   const [activeToken, setActiveToken] = useState<Token | null>(null);
   const [activeEntry, setActiveEntry] = useState<DictionaryEntry | null>(null);
   const [surroundingSentence, setSurroundingSentence] = useState<string>('');
+  const [tokenSentenceRange, setTokenSentenceRange] = useState<{
+    start: number;
+    end: number;
+    surface: string;
+  } | null>(null);
   const [popupPos, setPopupPos] = useState<{ x: number; y: number; showAbove?: boolean } | null>(null);
   const [isPinned, setIsPinned] = useState(false);
   const [isHoveringPopup, setIsHoveringPopup] = useState(false);
@@ -220,11 +226,23 @@ export const ReaderView: React.FC = () => {
 
     hoverTimerRef.current = window.setTimeout(async () => {
       const entry = await pack.lookup(token.surface, token.baseForm);
-      const sentence = extractSurroundingSentence(activeDocument?.content || '', token.startIndex);
+      const fullText = activeDocument?.content || '';
+      const withOffsets = extractSentenceWithOffsets(fullText, token.startIndex, token.endIndex);
+      const sentence =
+        withOffsets?.sentence ?? extractSurroundingSentence(fullText, token.startIndex);
 
       setActiveToken(token);
       setActiveEntry(entry);
       setSurroundingSentence(sentence);
+      setTokenSentenceRange(
+        withOffsets
+          ? {
+              start: withOffsets.start,
+              end: withOffsets.end,
+              surface: token.surface,
+            }
+          : null
+      );
       setPopupPos(calculatePopupPosition(rect));
     }, 70);
   };
@@ -256,11 +274,23 @@ export const ReaderView: React.FC = () => {
 
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     const entry = await pack.lookup(token.surface, token.baseForm);
-    const sentence = extractSurroundingSentence(activeDocument?.content || '', token.startIndex);
+    const fullText = activeDocument?.content || '';
+    const withOffsets = extractSentenceWithOffsets(fullText, token.startIndex, token.endIndex);
+    const sentence =
+      withOffsets?.sentence ?? extractSurroundingSentence(fullText, token.startIndex);
 
     setActiveToken(token);
     setActiveEntry(entry);
     setSurroundingSentence(sentence);
+    setTokenSentenceRange(
+      withOffsets
+        ? {
+            start: withOffsets.start,
+            end: withOffsets.end,
+            surface: token.surface,
+          }
+        : null
+    );
     setIsPinned(true);
     setPopupPos(calculatePopupPosition(rect));
 
@@ -635,6 +665,7 @@ export const ReaderView: React.FC = () => {
             entry={activeEntry}
             pack={pack}
             surroundingSentence={surroundingSentence}
+            tokenSentenceRange={tokenSentenceRange}
             documentId={activeDocument?.id}
             documentTitle={activeDocument?.title}
             isPinned={isPinned}
@@ -679,7 +710,19 @@ export const ReaderView: React.FC = () => {
           documentTitle={activeDocument?.title || 'Document'}
           onClose={() => setShowStatsModal(false)}
           onSelectWord={(token) => {
+            const fullText = activeDocument?.content || '';
+            const withOffsets = extractSentenceWithOffsets(
+              fullText,
+              token.startIndex,
+              token.endIndex
+            );
             setActiveToken(token);
+            setSurroundingSentence(withOffsets?.sentence || '');
+            setTokenSentenceRange(
+              withOffsets
+                ? { start: withOffsets.start, end: withOffsets.end, surface: token.surface }
+                : null
+            );
             setIsPinned(true);
             pack.lookup(token.surface, token.baseForm).then(setActiveEntry);
           }}

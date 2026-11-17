@@ -10,12 +10,18 @@ import {
   deleteCards,
   bulkMoveCards,
   bulkTagCards,
+  createClozeCardsFromCards,
+  createListeningCardsFromCards,
   getDefaultDeckId,
   type DeckWithCount,
 } from '../../db/cards';
 import { useAppStore } from '../../store/useAppStore';
 import { getLanguagePack } from '../../packs/registry';
+import { getEffectiveClozeData } from '../../core/cloze';
+import { isSpeechSynthesisSupported, speakWithReliability } from '../../core/speech';
+import { getStudySettings } from '../../core/studySettings';
 import { FuriganaText } from '../../ui/FuriganaText';
+import { ClozeSentenceView } from '../review/HighlightedSentence';
 import { CardEditModal } from './CardEditModal';
 import {
   Layers,
@@ -36,12 +42,16 @@ import {
   BookOpen,
   Download,
   Upload,
+  Scissors,
+  Headphones,
 } from 'lucide-react';
 
 const CARD_TYPE_LABELS: Record<CardType, string> = {
   word_to_meaning: 'Word → Meaning',
   meaning_to_word: 'Meaning → Word',
   reading: 'Reading',
+  cloze: 'Cloze',
+  listening: 'Listening',
 };
 
 const LEVEL_SORT_ORDER: Record<string, number> = {
@@ -104,8 +114,10 @@ export const CardsView: React.FC = () => {
   const [deleteDeckAction, setDeleteDeckAction] = useState<'move' | 'delete'>('move');
   const [deleteDeckTargetId, setDeleteDeckTargetId] = useState<string>('');
 
-  // Card Edit Modal
+  // Card Edit / Create Modal
   const [editingCard, setEditingCard] = useState<CardItem | null>(null);
+  const [isCreatingCloze, setIsCreatingCloze] = useState(false);
+  const [bulkNotice, setBulkNotice] = useState<string | null>(null);
   const [confirmDeleteSingleId, setConfirmDeleteSingleId] = useState<string | null>(null);
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
 
@@ -267,15 +279,26 @@ export const CardsView: React.FC = () => {
     [cards]
   );
 
-  const handleSpeak = (text: string, e?: React.MouseEvent) => {
+  const ttsSupported = isSpeechSynthesisSupported();
+
+  const handleSpeak = async (text: string, e?: React.MouseEvent) => {
     e?.stopPropagation();
-    if ('speechSynthesis' in window && text) {
-      window.speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = pack.ttsCode || 'ja-JP';
-      u.rate = 0.85;
-      window.speechSynthesis.speak(u);
+    if (!text) return;
+    if (!ttsSupported) {
+      setBulkNotice('Text-to-speech is not supported in this browser.');
+      return;
     }
+    const settings = await getStudySettings();
+    const ttsCode = pack.ttsCode || 'ja-JP';
+    const preferredVoiceId =
+      settings.speechVoiceByLang[pack.id] || settings.speechVoiceByLang[ttsCode];
+    speakWithReliability({
+      text,
+      ttsCode,
+      preferredVoiceId,
+      rate: settings.speechRate,
+      onError: (msg) => setBulkNotice(msg),
+    });
   };
 
   // Deck handlers
@@ -433,6 +456,75 @@ export const CardsView: React.FC = () => {
     }
   };
 
+  const handleBulkCreateCloze = async () => {
+    if (selectedIds.size === 0 || isBulkBusy) return;
+    setIsBulkBusy(true);
+    setBulkNotice(null);
+    setError(null);
+    try {
+      const result = await createClozeCardsFromCards(
+        Array.from(selectedIds),
+        async (sentence, langId) => {
+          const langPack = getLanguagePack(langId);
+          const toks = await langPack.tokenize(sentence);
+          return toks.map((t) => ({
+            surface: t.surface,
+            lemma: t.baseForm || t.surface,
+            reading: t.reading,
+            startIndex: t.startIndex,
+            endIndex: t.endIndex,
+          }));
+        }
+      );
+
+      const parts: string[] = [];
+      parts.push(
+        `Created ${result.created.length} cloze ${result.created.length === 1 ? 'card' : 'cards'}`
+      );
+      if (result.skippedDuplicate > 0) {
+        parts.push(`${result.skippedDuplicate} already existed`);
+      }
+      if (result.skippedNoSentence > 0) {
+        parts.push(`${result.skippedNoSentence} had no sentence`);
+      }
+      if (result.skippedNoMatch > 0) {
+        parts.push(`${result.skippedNoMatch} word not found in sentence`);
+      }
+      setBulkNotice(parts.join(' · '));
+      setSelectedIds(new Set());
+      await loadData();
+    } catch (err: any) {
+      setError(err?.message || 'Failed to create cloze cards.');
+    } finally {
+      setIsBulkBusy(false);
+    }
+  };
+
+  const handleBulkCreateListening = async () => {
+    if (selectedIds.size === 0 || isBulkBusy || !ttsSupported) return;
+    setIsBulkBusy(true);
+    setBulkNotice(null);
+    setError(null);
+    try {
+      const result = await createListeningCardsFromCards(Array.from(selectedIds), 'word');
+      const parts: string[] = [
+        `Created ${result.created.length} listening ${
+          result.created.length === 1 ? 'card' : 'cards'
+        }`,
+      ];
+      if (result.skippedDuplicate > 0) {
+        parts.push(`${result.skippedDuplicate} already existed`);
+      }
+      setBulkNotice(parts.join(' · '));
+      setSelectedIds(new Set());
+      await loadData();
+    } catch (err: any) {
+      setError(err?.message || 'Failed to create listening cards.');
+    } finally {
+      setIsBulkBusy(false);
+    }
+  };
+
   const deletingDeckOtherDecks = deletingDeck
     ? decks.filter((d) => d.id !== deletingDeck.id)
     : [];
@@ -468,6 +560,18 @@ export const CardsView: React.FC = () => {
               <Download className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
               <span>Export</span>
             </Link>
+
+            <button
+              type="button"
+              onClick={() => {
+                setEditingCard(null);
+                setIsCreatingCloze(true);
+              }}
+              className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 min-h-[44px] rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] hover:bg-[var(--surface)] text-[var(--text)] text-xs font-bold transition whitespace-nowrap"
+            >
+              <Scissors className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+              <span>New Cloze</span>
+            </button>
 
             <button
               type="button"
@@ -656,6 +760,8 @@ export const CardsView: React.FC = () => {
               <option value="word_to_meaning">Word → Meaning</option>
               <option value="meaning_to_word">Meaning → Word</option>
               <option value="reading">Reading</option>
+              <option value="cloze">Cloze</option>
+              <option value="listening">Listening</option>
             </select>
 
             <select
@@ -813,6 +919,38 @@ export const CardsView: React.FC = () => {
                 </button>
               </div>
 
+              {/* Bulk Create Cloze */}
+              <button
+                type="button"
+                disabled={isBulkBusy}
+                onClick={handleBulkCreateCloze}
+                className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[var(--surface)] border border-[var(--border)] hover:bg-[var(--surface-muted)] font-semibold text-[var(--text)] transition inline-flex items-center gap-1.5"
+              >
+                <Scissors className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                <span>Create cloze cards for selected</span>
+              </button>
+
+              {/* Bulk Create Listening */}
+              {ttsSupported ? (
+                <button
+                  type="button"
+                  disabled={isBulkBusy}
+                  onClick={handleBulkCreateListening}
+                  className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[var(--surface)] border border-[var(--border)] hover:bg-[var(--surface-muted)] font-semibold text-[var(--text)] transition inline-flex items-center gap-1.5"
+                >
+                  <Headphones className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                  <span>Create listening cards for selected</span>
+                </button>
+              ) : (
+                <span
+                  title="Web Speech API text-to-speech is not supported in this browser"
+                  className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[var(--surface)]/60 border border-[var(--border)] text-[var(--text-muted)] inline-flex items-center gap-1.5"
+                >
+                  <Headphones className="w-3.5 h-3.5" />
+                  <span>Listening unavailable (no browser TTS)</span>
+                </span>
+              )}
+
               {/* Bulk Delete */}
               <button
                 type="button"
@@ -825,6 +963,20 @@ export const CardsView: React.FC = () => {
               </button>
             </div>
           </section>
+        )}
+
+        {bulkNotice && (
+          <div className="p-3.5 rounded-2xl bg-[var(--surface)] border border-indigo-500/30 flex items-center justify-between gap-3 text-xs text-[var(--text)]">
+            <span className="font-medium">{bulkNotice}</span>
+            <button
+              type="button"
+              onClick={() => setBulkNotice(null)}
+              className="text-[var(--text-muted)] hover:text-[var(--text)] p-1 rounded"
+              aria-label="Dismiss message"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
         )}
 
         {/* Card List / States */}
@@ -993,7 +1145,21 @@ export const CardsView: React.FC = () => {
 
                     {card.sentence && (
                       <div className="pt-1.5 border-t border-[var(--border)]/60 text-xs sm:text-sm text-[var(--text-secondary)]">
-                        {card.sentenceFuriganaSegments && card.sentenceFuriganaSegments.length > 0 ? (
+                        {card.cardType === 'cloze' && getEffectiveClozeData(card) ? (
+                          (() => {
+                            const cl = getEffectiveClozeData(card)!;
+                            return (
+                              <ClozeSentenceView
+                                sentence={cl.sentence}
+                                start={cl.start}
+                                end={cl.end}
+                                mode="back"
+                                segments={card.sentenceFuriganaSegments}
+                                furiganaMode={furiganaMode}
+                              />
+                            );
+                          })()
+                        ) : card.sentenceFuriganaSegments && card.sentenceFuriganaSegments.length > 0 ? (
                           <FuriganaText
                             segments={card.sentenceFuriganaSegments}
                             text={card.sentence}
@@ -1010,6 +1176,16 @@ export const CardsView: React.FC = () => {
                       <span>{deckName}</span>
                       <span aria-hidden="true">·</span>
                       <span>{CARD_TYPE_LABELS[card.cardType]}</span>
+                      {card.cardType === 'listening' && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span>
+                            {card.listeningTarget === 'sentence' && card.sentence
+                              ? 'Sentence audio'
+                              : 'Word audio'}
+                          </span>
+                        </>
+                      )}
                       {card.level && (
                         <>
                           <span aria-hidden="true">·</span>
@@ -1289,12 +1465,18 @@ export const CardsView: React.FC = () => {
         </div>
       )}
 
-      {/* Edit Card Modal (with per-card Review History) */}
+      {/* Edit / Create Card Modal (with per-card Review History & Cloze Blank Editor) */}
       <CardEditModal
         card={editingCard}
+        isCreating={isCreatingCloze}
+        defaultCardType="cloze"
+        defaultDeckId={deckFilter !== 'all' ? deckFilter : undefined}
         decks={decks}
         languageId={activeLanguageId}
-        onClose={() => setEditingCard(null)}
+        onClose={() => {
+          setEditingCard(null);
+          setIsCreatingCloze(false);
+        }}
         onSaved={async () => {
           await loadData();
         }}

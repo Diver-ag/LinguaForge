@@ -11,6 +11,7 @@ import {
   saveDeckStudySettings,
   saveDeveloperSettings,
   saveStudySettings,
+  type ClozeHintMode,
   type DeveloperSettings,
   type NewCardMix,
   type NewCardOrder,
@@ -33,6 +34,18 @@ import {
 import { downloadBackupFile, restoreFromBackup } from '../../core/backup';
 import { getRecentEvents, clearEventLogs } from '../../core/eventLogger';
 import { runTokenizerDiagnostics, type TokenizerDiagnosticsInfo } from '../../packs/japanese/tokenizer';
+import { getLanguagePack } from '../../packs/registry';
+import {
+  getBrowserOnlineStatus,
+  getVoicesForLanguage,
+  isSpeechSynthesisSupported,
+  loadAvailableVoices,
+  selectVoiceForSpeech,
+  speakWithReliability,
+  stopActiveSpeech,
+  VOICE_INSTALL_GUIDES,
+  type SpeechVoiceOption,
+} from '../../core/speech';
 import {
   Settings,
   Key,
@@ -57,6 +70,10 @@ import {
   GraduationCap,
   Wrench,
   FileArchive,
+  Volume2,
+  Play,
+  Square as StopIcon,
+  WifiOff,
 } from 'lucide-react';
 
 export const SettingsView: React.FC = () => {
@@ -124,6 +141,14 @@ export const SettingsView: React.FC = () => {
   const [diagnostics, setDiagnostics] = useState<TokenizerDiagnosticsInfo | null>(null);
   const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
 
+  // Speech & TTS state
+  const ttsSupported = isSpeechSynthesisSupported();
+  const [availableVoices, setAvailableVoices] = useState<SpeechVoiceOption[]>([]);
+  const [isLoadingVoices, setIsLoadingVoices] = useState(ttsSupported);
+  const [isOnline, setIsOnline] = useState<boolean>(getBrowserOnlineStatus());
+  const [isTestingSpeech, setIsTestingSpeech] = useState(false);
+  const [speechTestError, setSpeechTestError] = useState<string | null>(null);
+
   const loadDiagnostics = async () => {
     setIsRunningDiagnostics(true);
     try {
@@ -189,6 +214,60 @@ export const SettingsView: React.FC = () => {
       cancelled = true;
     };
   }, [activeLanguageId]);
+
+  const refreshSpeechVoices = async () => {
+    if (!ttsSupported) {
+      setIsLoadingVoices(false);
+      return;
+    }
+    setIsLoadingVoices(true);
+    try {
+      const list = await loadAvailableVoices(1500);
+      setAvailableVoices(list);
+    } finally {
+      setIsLoadingVoices(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!ttsSupported) return;
+    let cancelled = false;
+    loadAvailableVoices(1500).then((list) => {
+      if (!cancelled) {
+        setAvailableVoices(list);
+        setIsLoadingVoices(false);
+      }
+    });
+
+    const synth = window.speechSynthesis;
+    const handleVoicesChanged = () => {
+      const list = synth.getVoices() || [];
+      setAvailableVoices(
+        list.map((v) => ({
+          voiceURI: v.voiceURI || v.name,
+          name: v.name,
+          lang: v.lang || '',
+          localService: Boolean(v.localService),
+          isDefault: Boolean(v.default),
+          voice: v,
+        }))
+      );
+    };
+    synth.addEventListener?.('voiceschanged', handleVoicesChanged);
+
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      cancelled = true;
+      stopActiveSpeech();
+      synth.removeEventListener?.('voiceschanged', handleVoicesChanged);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [ttsSupported]);
 
   const flashStudyToast = () => {
     setStudySavedToast(true);
@@ -923,8 +1002,8 @@ export const SettingsView: React.FC = () => {
             </div>
           </div>
 
-          {/* Queue Mix, Reset Hour, Leech Threshold */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+          {/* Queue Mix, Reset Hour, Leech Threshold, Cloze Hint */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
             <label className="space-y-1">
               <span className="font-semibold text-[var(--text-secondary)] block">
                 New cards vs reviews
@@ -983,6 +1062,24 @@ export const SettingsView: React.FC = () => {
                 }
                 className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text)] tabular-nums"
               />
+            </label>
+
+            <label className="space-y-1">
+              <span className="font-semibold text-[var(--text-secondary)] block">
+                Cloze blank hint
+              </span>
+              <select
+                value={studySettings.clozeHintMode}
+                onChange={(e) =>
+                  handleUpdateGlobalStudy({ clozeHintMode: e.target.value as ClozeHintMode })
+                }
+                className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text)]"
+              >
+                <option value="meaning">Meaning (default)</option>
+                <option value="reading">Reading</option>
+                <option value="both">Meaning + Reading</option>
+                <option value="none">No hint</option>
+              </select>
             </label>
           </div>
 
@@ -1125,6 +1222,281 @@ export const SettingsView: React.FC = () => {
             </div>
           </div>
         </section>
+
+        {/* Speech & Listening Cards (Web Speech API) */}
+        {(() => {
+          const activePack = getLanguagePack(activeLanguageId);
+          const ttsCode = activePack.ttsCode || 'ja-JP';
+          const compatibleVoices = getVoicesForLanguage(availableVoices, ttsCode);
+          const savedVoiceId =
+            studySettings.speechVoiceByLang[activePack.id] ||
+            studySettings.speechVoiceByLang[ttsCode] ||
+            '';
+          const voiceSelection = selectVoiceForSpeech({
+            voices: availableVoices,
+            ttsCode,
+            preferredVoiceId: savedVoiceId,
+            isOnline,
+          });
+          const samplePhrase =
+            activePack.id === 'ja'
+              ? 'おはようございます。今日はいい天気ですね。'
+              : activePack.id === 'es'
+              ? 'Buenos días. Hoy hace buen tiempo.'
+              : 'Hello, this is a speech synthesis test.';
+
+          const handleTestSpeech = () => {
+            if (isTestingSpeech) {
+              stopActiveSpeech();
+              setIsTestingSpeech(false);
+              return;
+            }
+            setSpeechTestError(null);
+            setIsTestingSpeech(true);
+            speakWithReliability({
+              text: samplePhrase,
+              ttsCode,
+              preferredVoiceId: savedVoiceId || undefined,
+              rate: studySettings.speechRate,
+              isOnline,
+              onEnd: () => setIsTestingSpeech(false),
+              onError: (msg) => {
+                setIsTestingSpeech(false);
+                setSpeechTestError(msg);
+              },
+            });
+          };
+
+          return (
+            <section
+              aria-label="Speech Settings"
+              className="p-6 rounded-3xl bg-[var(--surface)] border border-[var(--border)] shadow-xs space-y-5"
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <h2 className="font-bold text-base text-[var(--text)] flex items-center gap-2">
+                    <Volume2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                    <span>Speech</span>
+                  </h2>
+                  <p className="text-xs text-[var(--text-muted)]">
+                    Text-to-speech voice, playback speed, and listening card audio for {activePack.flagEmoji}{' '}
+                    {activePack.name} ({ttsCode}).
+                  </p>
+                </div>
+
+                {ttsSupported && (
+                  <button
+                    type="button"
+                    onClick={refreshSpeechVoices}
+                    className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] hover:bg-[var(--border)] text-xs font-semibold text-[var(--text)] inline-flex items-center gap-1.5 self-start sm:self-auto"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isLoadingVoices ? 'animate-spin' : ''}`} />
+                    <span>Refresh voices</span>
+                  </button>
+                )}
+              </div>
+
+              {!ttsSupported ? (
+                <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-200 space-y-1.5">
+                  <div className="font-bold flex items-center gap-1.5">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>Text-to-speech is not supported in this browser</span>
+                  </div>
+                  <p className="leading-relaxed opacity-90">
+                    The browser Web Speech API (speechSynthesis) is unavailable in this environment, so listening card creation is hidden and audio playback is disabled. Use a modern Chromium, Safari, or Firefox browser with system TTS enabled to study listening cards.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-5 text-xs">
+                  {/* Offline / Local voice notice */}
+                  {!isOnline && voiceSelection.offlineBlocked && (
+                    <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 text-rose-900 dark:text-rose-200 space-y-1">
+                      <div className="font-bold flex items-center gap-1.5">
+                        <WifiOff className="w-4 h-4 shrink-0" />
+                        <span>Offline: only network voices are available</span>
+                      </div>
+                      <p className="leading-relaxed">
+                        The installed voices for {activePack.name} ({ttsCode}) require an internet connection, so listening card audio cannot play offline. Connect to the internet or download an offline device voice using the instructions below.
+                      </p>
+                    </div>
+                  )}
+
+                  {!isOnline && !voiceSelection.offlineBlocked && voiceSelection.usedLocalFallback && (
+                    <div className="p-3.5 rounded-2xl bg-sky-50 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-800 text-sky-900 dark:text-sky-200 flex items-start gap-2">
+                      <WifiOff className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>
+                        Offline mode: your preferred voice is network-only, so playback will automatically use local offline voice <strong>{voiceSelection.voice?.name}</strong>.
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Missing voice warning + Android / Windows instructions */}
+                  {!isLoadingVoices && compatibleVoices.length === 0 && (
+                    <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-amber-950 dark:text-amber-200 space-y-3">
+                      <div className="font-bold flex items-center gap-1.5">
+                        <AlertCircle className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                        <span>
+                          No TTS voice installed for {activePack.name} ({ttsCode})
+                        </span>
+                      </div>
+                      <p className="leading-relaxed">
+                        Your browser did not report any voice matching {ttsCode}. Install a system voice for this language, then click Refresh voices:
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {[VOICE_INSTALL_GUIDES.android, VOICE_INSTALL_GUIDES.windows].map((guide) => (
+                          <div
+                            key={guide.title}
+                            className="p-3 rounded-xl bg-[var(--surface)]/80 border border-amber-200/80 dark:border-amber-800/60 space-y-1.5"
+                          >
+                            <div className="font-bold text-[var(--text)]">{guide.title}</div>
+                            <ol className="list-decimal list-inside space-y-1 text-[11px] text-[var(--text-secondary)]">
+                              {guide.steps.map((step, i) => (
+                                <li key={i}>{step}</li>
+                              ))}
+                            </ol>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Voice picker */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <label className="space-y-1.5">
+                      <span className="font-semibold text-[var(--text-secondary)] block">
+                        Voice for {activePack.name} ({ttsCode})
+                      </span>
+                      <select
+                        value={savedVoiceId}
+                        onChange={(e) => {
+                          const voiceId = e.target.value;
+                          const nextMap = { ...studySettings.speechVoiceByLang };
+                          if (voiceId) {
+                            nextMap[activePack.id] = voiceId;
+                            nextMap[ttsCode] = voiceId;
+                          } else {
+                            delete nextMap[activePack.id];
+                            delete nextMap[ttsCode];
+                          }
+                          handleUpdateGlobalStudy({ speechVoiceByLang: nextMap });
+                        }}
+                        aria-label={`Voice for ${activePack.name}`}
+                        className="w-full min-h-[42px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text)]"
+                      >
+                        <option value="">
+                          Auto (Prefer local offline voice when available)
+                        </option>
+                        {compatibleVoices.map((v) => (
+                          <option key={v.voiceURI} value={v.voiceURI}>
+                            {v.name} · {v.lang} · {v.localService ? 'Local' : 'Network'}
+                          </option>
+                        ))}
+                      </select>
+                      {compatibleVoices.length > 0 && (
+                        <p className="text-[11px] text-[var(--text-muted)] tabular-nums">
+                          {compatibleVoices.length} voice{compatibleVoices.length === 1 ? '' : 's'} available (
+                          {voiceSelection.localVoices.length} local offline)
+                        </p>
+                      )}
+                    </label>
+
+                    {/* Auto-play toggle */}
+                    <div className="space-y-1.5">
+                      <span className="font-semibold text-[var(--text-secondary)] block">
+                        Auto-play on listening cards
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleUpdateGlobalStudy({
+                            listeningAutoPlay: !studySettings.listeningAutoPlay,
+                          })
+                        }
+                        className={`w-full min-h-[42px] px-3 py-1.5 rounded-xl border font-semibold flex items-center justify-between transition ${
+                          studySettings.listeningAutoPlay
+                            ? 'border-emerald-500 bg-emerald-50/70 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+                            : 'border-[var(--border)] text-[var(--text-muted)]'
+                        }`}
+                      >
+                        <span>
+                          {studySettings.listeningAutoPlay
+                            ? 'Speak automatically when card appears'
+                            : 'Manual play only'}
+                        </span>
+                        <span className="font-bold">
+                          {studySettings.listeningAutoPlay ? 'ON' : 'OFF'}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Speech speed slider & Test button */}
+                  <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-4 items-end pt-1">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <label
+                          htmlFor="speech-rate-slider"
+                          className="font-semibold text-[var(--text-secondary)]"
+                        >
+                          Default playback speed
+                        </label>
+                        <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400 tabular-nums">
+                          {studySettings.speechRate.toFixed(2)}x
+                        </span>
+                      </div>
+                      <input
+                        id="speech-rate-slider"
+                        type="range"
+                        min={0.5}
+                        max={1.5}
+                        step={0.05}
+                        value={studySettings.speechRate}
+                        onChange={(e) =>
+                          handleUpdateGlobalStudy({ speechRate: Number(e.target.value) })
+                        }
+                        className="w-full accent-indigo-600 cursor-pointer"
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleTestSpeech}
+                      className="min-h-[44px] px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold inline-flex items-center justify-center gap-2 transition shrink-0"
+                    >
+                      {isTestingSpeech ? (
+                        <>
+                          <StopIcon className="w-4 h-4 fill-current" />
+                          <span>Stop Test</span>
+                        </>
+                      ) : (
+                        <>
+                          <Play className="w-4 h-4 fill-current" />
+                          <span>Test Voice</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {speechTestError && (
+                    <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 flex items-center justify-between gap-3 text-rose-800 dark:text-rose-200">
+                      <div className="flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
+                        <span>{speechTestError}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleTestSpeech}
+                        className="min-h-[34px] px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold shrink-0"
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+          );
+        })()}
 
         {/* Local-First JSON Backup & Restore */}
         <div className="p-6 rounded-3xl bg-[var(--surface)] border border-[var(--border)] shadow-xs space-y-4">

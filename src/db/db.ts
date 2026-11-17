@@ -51,7 +51,10 @@ export interface SettingItem {
   value: any;
 }
 
-export type CardType = 'word_to_meaning' | 'meaning_to_word' | 'reading';
+import type { ClozeData } from '../core/cloze';
+
+export type CardType = 'word_to_meaning' | 'meaning_to_word' | 'reading' | 'cloze' | 'listening';
+export type { ClozeData };
 
 export interface DeckStudySettings {
   newCardsPerDay?: number;
@@ -83,6 +86,8 @@ export interface CardItem {
   frequencyBand?: string;
   sentence?: string;
   sentenceFuriganaSegments?: { text: string; ruby?: string }[];
+  cloze?: ClozeData;
+  listeningTarget?: 'word' | 'sentence';
   sourceDocTitle?: string;
   sourceDocId?: number;
   tags: string[];
@@ -513,6 +518,16 @@ export class LinguaForgeDatabase extends Dexie {
       cards:
         'id, deckId, languageId, cardType, word, lemma, [lemma+reading+cardType], [languageId+deckId], level, sourceDocId, *tags, suspended, buried, buriedUntil, state, due, exportedAt, createdAt, updatedAt',
       exportHistory: 'id, exportedAt, languageId, format',
+    });
+
+    this.version(11).stores({
+      cards:
+        'id, deckId, languageId, cardType, word, lemma, [lemma+reading+cardType], [languageId+deckId], level, sourceDocId, *tags, suspended, buried, buriedUntil, state, due, exportedAt, createdAt, updatedAt',
+    });
+
+    this.version(12).stores({
+      cards:
+        'id, deckId, languageId, cardType, word, lemma, [lemma+reading+cardType], [languageId+deckId], level, sourceDocId, *tags, suspended, buried, buriedUntil, state, due, exportedAt, createdAt, updatedAt',
     });
   }
 }

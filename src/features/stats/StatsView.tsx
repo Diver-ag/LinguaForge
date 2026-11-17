@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { db, type CardItem, type DeckItem } from '../../db/db';
+import { db, type CardItem, type CardType, type DeckItem } from '../../db/db';
 import { useAppStore } from '../../store/useAppStore';
 import { getAllLanguagePacks, getLanguagePack } from '../../packs/registry';
 import {
@@ -20,6 +20,7 @@ import { DailyGoalRing } from '../../components/DailyGoalRing';
 import { CardEditModal } from '../cards/CardEditModal';
 import {
   CalendarHeatmapSvg,
+  CardTypeBreakdownChart,
   DailyMetricBarChartSvg,
   ForecastBarChartSvg,
   IntervalHistogramSvg,
@@ -132,6 +133,7 @@ export const StatsView: React.FC = () => {
 
   const [languageFilter, setLanguageFilter] = useState<string>(activeLanguageId);
   const [deckFilter, setDeckFilter] = useState<string>('all');
+  const [cardTypeFilter, setCardTypeFilter] = useState<'all' | CardType>('all');
   const [period, setPeriod] = useState<StatsPeriod>('30d');
   const [includeDemoData, setIncludeDemoData] = useState<boolean>(false);
   const [studySettings, setStudySettings] = useState<StudySettings>(DEFAULT_STUDY_SETTINGS);
@@ -178,6 +180,7 @@ export const StatsView: React.FC = () => {
       const computed = await computeDashboardStats({
         languageId: languageFilter,
         deckId: effectiveDeckId,
+        cardType: cardTypeFilter,
         period,
         includeDemoData: devSettings.includeDemoData,
         studySettings: settings,
@@ -189,7 +192,7 @@ export const StatsView: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [languageFilter, deckFilter, period]);
+  }, [languageFilter, deckFilter, cardTypeFilter, period]);
 
   useEffect(() => {
     loadStats();
@@ -322,6 +325,20 @@ export const StatsView: React.FC = () => {
                     {d.name}
                   </option>
                 ))}
+              </select>
+
+              <select
+                value={cardTypeFilter}
+                onChange={(e) => setCardTypeFilter(e.target.value as 'all' | CardType)}
+                aria-label="Filter by card type"
+                className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] text-xs font-semibold text-[var(--text)]"
+              >
+                <option value="all">All card types</option>
+                <option value="word_to_meaning">Word → Meaning</option>
+                <option value="meaning_to_word">Meaning → Word</option>
+                <option value="reading">Reading</option>
+                <option value="cloze">Cloze</option>
+                <option value="listening">Listening</option>
               </select>
             </div>
 
@@ -688,6 +705,20 @@ export const StatsView: React.FC = () => {
             )}
           </StatsCard>
         </div>
+
+        {/* Card Types Breakdown (including Cloze) */}
+        <StatsCard
+          title="Cards & Reviews by Type"
+          subtitle="Deck distribution, active maturity, and review retention split by card type"
+          action={<Layers className="w-4 h-4 text-[var(--text-muted)]" />}
+          loading={loading}
+          error={error}
+          isEmpty={!stats || stats.cardTypeBreakdown.every((r) => r.totalCards === 0)}
+          emptyMessage="Add some cards to see card type distribution"
+          onRetry={loadStats}
+        >
+          {stats && <CardTypeBreakdownChart rows={stats.cardTypeBreakdown} />}
+        </StatsCard>
 
         {/* Row 5: Words Learned Over Time + Study Time */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

@@ -1,6 +1,13 @@
-import { db, type CardItem, type CardType, type DeckItem } from './db';
+import { db, type CardItem, type CardType, type ClozeData, type DeckItem } from './db';
 import { getAllLanguagePacks } from '../packs/registry';
 import { invalidateStatsCache } from '../core/statsCache';
+import {
+  buildClozeDuplicateKey,
+  getEffectiveClozeData,
+  resolveClozeFromSentence,
+  validateClozeOffsets,
+  type ClozeTokenCandidate,
+} from '../core/cloze';
 
 export function generateEntityId(prefix: string): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -158,6 +165,35 @@ export async function findDuplicateCard(params: {
   return matches.find((c) => c.languageId === params.languageId);
 }
 
+export async function findDuplicateClozeCard(params: {
+  languageId: string;
+  lemma: string;
+  sentence: string;
+  start: number;
+  end: number;
+  excludeCardId?: string;
+}): Promise<CardItem | undefined> {
+  const targetKey = buildClozeDuplicateKey(params);
+  const candidates = await db.cards
+    .where('languageId')
+    .equals(params.languageId)
+    .filter((c) => c.cardType === 'cloze' && c.id !== params.excludeCardId)
+    .toArray();
+
+  return candidates.find((c) => {
+    const cloze = getEffectiveClozeData(c);
+    if (!cloze) return false;
+    const key = buildClozeDuplicateKey({
+      languageId: c.languageId,
+      lemma: cloze.lemma || c.lemma || c.word,
+      sentence: cloze.sentence,
+      start: cloze.start,
+      end: cloze.end,
+    });
+    return key === targetKey;
+  });
+}
+
 export async function addCardsForWord(params: {
   deckId?: string;
   languageId: string;
@@ -172,6 +208,8 @@ export async function addCardsForWord(params: {
   frequencyBand?: string;
   sentence?: string;
   sentenceFuriganaSegments?: { text: string; ruby?: string }[];
+  cloze?: ClozeData;
+  listeningTarget?: 'word' | 'sentence';
   sourceDocTitle?: string;
   sourceDocId?: number;
   tags?: string[];
@@ -189,16 +227,64 @@ export async function addCardsForWord(params: {
   const duplicateTypes: CardType[] = [];
 
   for (const cardType of requestedTypes) {
-    const existing = await findDuplicateCard({
-      languageId: params.languageId,
-      lemma: normalizedLemma,
-      reading: normalizedReading,
-      cardType,
-    });
+    let clozePayload: ClozeData | undefined;
 
-    if (existing) {
-      duplicateTypes.push(cardType);
-      continue;
+    if (cardType === 'cloze') {
+      const candidateSentence = (params.cloze?.sentence ?? params.sentence ?? '').trim();
+      if (!candidateSentence) {
+        continue;
+      }
+      if (params.cloze) {
+        const check = validateClozeOffsets(
+          candidateSentence,
+          params.cloze.start,
+          params.cloze.end
+        );
+        if (!check.valid) continue;
+        clozePayload = {
+          sentence: candidateSentence,
+          start: params.cloze.start,
+          end: params.cloze.end,
+          answer: params.cloze.answer || check.slice || params.word,
+          lemma: (params.cloze.lemma || normalizedLemma).trim(),
+          reading: (params.cloze.reading ?? normalizedReading).trim(),
+          hint: params.cloze.hint !== undefined ? params.cloze.hint : params.meaning,
+        };
+      } else {
+        const resolved = resolveClozeFromSentence({
+          sentence: candidateSentence,
+          word: params.word,
+          lemma: normalizedLemma,
+          reading: normalizedReading,
+          meaning: params.meaning,
+        });
+        if (!resolved) continue;
+        clozePayload = resolved;
+      }
+
+      const existingCloze = await findDuplicateClozeCard({
+        languageId: params.languageId,
+        lemma: clozePayload.lemma,
+        sentence: clozePayload.sentence,
+        start: clozePayload.start,
+        end: clozePayload.end,
+      });
+      if (existingCloze) {
+        duplicateTypes.push('cloze');
+        continue;
+      }
+    } else {
+      const existing = await findDuplicateCard({
+        languageId: params.languageId,
+        lemma: normalizedLemma,
+        reading: normalizedReading,
+        cardType,
+      });
+
+      if (existing) {
+        duplicateTypes.push(cardType);
+        continue;
+      }
     }
 
     const newCard: CardItem = {
@@ -206,16 +292,23 @@ export async function addCardsForWord(params: {
       deckId: targetDeckId,
       languageId: params.languageId,
       cardType,
-      word: params.word,
-      lemma: normalizedLemma,
-      reading: normalizedReading,
+      word: cardType === 'cloze' && clozePayload ? clozePayload.answer : params.word,
+      lemma: cardType === 'cloze' && clozePayload ? clozePayload.lemma : normalizedLemma,
+      reading: cardType === 'cloze' && clozePayload ? clozePayload.reading : normalizedReading,
       furiganaSegments: params.furiganaSegments,
       meaning: params.meaning,
       partOfSpeech: params.partOfSpeech || '',
       level: params.level || '',
       frequencyBand: params.frequencyBand || '',
-      sentence: params.sentence || '',
+      sentence: clozePayload ? clozePayload.sentence : params.sentence || '',
       sentenceFuriganaSegments: params.sentenceFuriganaSegments,
+      cloze: clozePayload,
+      listeningTarget:
+        cardType === 'listening'
+          ? params.listeningTarget === 'sentence' && (params.sentence || '').trim()
+            ? 'sentence'
+            : 'word'
+          : undefined,
       sourceDocTitle: params.sourceDocTitle || '',
       sourceDocId: params.sourceDocId,
       tags: params.tags || [],
@@ -241,6 +334,271 @@ export async function addCardsForWord(params: {
   if (added.length > 0) invalidateStatsCache();
 
   return { added, duplicateTypes };
+}
+
+export async function createClozeCardsFromCards(
+  cardIds: string[],
+  tokenizeSentence?: (
+    sentence: string,
+    languageId: string
+  ) => Promise<ClozeTokenCandidate[]>
+): Promise<{
+  created: CardItem[];
+  skippedDuplicate: number;
+  skippedNoSentence: number;
+  skippedNoMatch: number;
+}> {
+  if (cardIds.length === 0) {
+    return { created: [], skippedDuplicate: 0, skippedNoSentence: 0, skippedNoMatch: 0 };
+  }
+
+  const cards = (await db.cards.bulkGet(cardIds)).filter(Boolean) as CardItem[];
+  const now = Date.now();
+  const created: CardItem[] = [];
+  let skippedDuplicate = 0;
+  let skippedNoSentence = 0;
+  let skippedNoMatch = 0;
+
+  // Track existing cloze keys per language + any created in this batch
+  const existingClozeKeysByLang = new Map<string, Set<string>>();
+  const getLangKeys = async (langId: string) => {
+    let set = existingClozeKeysByLang.get(langId);
+    if (set) return set;
+    const existingClozes = await db.cards
+      .where('languageId')
+      .equals(langId)
+      .filter((c) => c.cardType === 'cloze')
+      .toArray();
+    set = new Set<string>();
+    for (const c of existingClozes) {
+      const cl = getEffectiveClozeData(c);
+      if (!cl) continue;
+      set.add(
+        buildClozeDuplicateKey({
+          languageId: langId,
+          lemma: cl.lemma || c.lemma || c.word,
+          sentence: cl.sentence,
+          start: cl.start,
+          end: cl.end,
+        })
+      );
+    }
+    existingClozeKeysByLang.set(langId, set);
+    return set;
+  };
+
+  for (const src of cards) {
+    const sentence = (src.cloze?.sentence || src.sentence || '').trim();
+    if (!sentence) {
+      skippedNoSentence++;
+      continue;
+    }
+
+    let clozeData: ClozeData | null = null;
+    if (src.cardType === 'cloze' && src.cloze) {
+      const valid = validateClozeOffsets(sentence, src.cloze.start, src.cloze.end);
+      if (valid.valid) {
+        clozeData = {
+          sentence,
+          start: src.cloze.start,
+          end: src.cloze.end,
+          answer: src.cloze.answer || valid.slice,
+          lemma: src.cloze.lemma || src.lemma || src.word,
+          reading: src.cloze.reading ?? src.reading ?? '',
+          hint: src.cloze.hint !== undefined ? src.cloze.hint : src.meaning,
+        };
+      }
+    }
+
+    if (!clozeData) {
+      let tokens: ClozeTokenCandidate[] | undefined;
+      if (tokenizeSentence) {
+        try {
+          tokens = await tokenizeSentence(sentence, src.languageId);
+        } catch {
+          tokens = undefined;
+        }
+      }
+      clozeData = resolveClozeFromSentence({
+        sentence,
+        word: src.word,
+        lemma: src.lemma || src.word,
+        reading: src.reading,
+        meaning: src.meaning,
+        tokens,
+      });
+    }
+
+    if (!clozeData) {
+      skippedNoMatch++;
+      continue;
+    }
+
+    const langKeys = await getLangKeys(src.languageId);
+    const dupKey = buildClozeDuplicateKey({
+      languageId: src.languageId,
+      lemma: clozeData.lemma,
+      sentence: clozeData.sentence,
+      start: clozeData.start,
+      end: clozeData.end,
+    });
+
+    if (langKeys.has(dupKey)) {
+      skippedDuplicate++;
+      continue;
+    }
+
+    langKeys.add(dupKey);
+    const newCard: CardItem = {
+      id: generateEntityId('card'),
+      deckId: src.deckId,
+      languageId: src.languageId,
+      cardType: 'cloze',
+      word: clozeData.answer,
+      lemma: clozeData.lemma,
+      reading: clozeData.reading,
+      furiganaSegments: src.furiganaSegments,
+      meaning: src.meaning,
+      partOfSpeech: src.partOfSpeech || '',
+      level: src.level || '',
+      frequencyBand: src.frequencyBand || '',
+      sentence: clozeData.sentence,
+      sentenceFuriganaSegments: src.sentenceFuriganaSegments,
+      cloze: clozeData,
+      sourceDocTitle: src.sourceDocTitle || '',
+      sourceDocId: src.sourceDocId,
+      tags: Array.isArray(src.tags) ? [...src.tags] : [],
+      notes: src.notes || '',
+      createdAt: now,
+      updatedAt: now,
+      suspended: false,
+      buried: false,
+      due: now,
+      stability: 0,
+      difficulty: 0,
+      reps: 0,
+      lapses: 0,
+      state: 0,
+      scheduledDays: 0,
+      elapsedDays: 0,
+      learningSteps: 0,
+    };
+
+    created.push(newCard);
+  }
+
+  if (created.length > 0) {
+    await db.cards.bulkPut(created);
+    invalidateStatsCache();
+  }
+
+  return {
+    created,
+    skippedDuplicate,
+    skippedNoSentence,
+    skippedNoMatch,
+  };
+}
+
+export async function createListeningCardsFromCards(
+  cardIds: string[],
+  listeningTarget: 'word' | 'sentence' = 'word'
+): Promise<{
+  created: CardItem[];
+  skippedDuplicate: number;
+}> {
+  if (cardIds.length === 0) {
+    return { created: [], skippedDuplicate: 0 };
+  }
+
+  const cards = (await db.cards.bulkGet(cardIds)).filter(Boolean) as CardItem[];
+  const now = Date.now();
+  const created: CardItem[] = [];
+  let skippedDuplicate = 0;
+
+  const existingKeysByLang = new Map<string, Set<string>>();
+  const makeKey = (lemma: string, reading: string) =>
+    `${lemma.trim()}\x1e${reading.trim()}`;
+
+  const getLangKeys = async (langId: string) => {
+    let set = existingKeysByLang.get(langId);
+    if (set) return set;
+    const existingListening = await db.cards
+      .where('languageId')
+      .equals(langId)
+      .filter((c) => c.cardType === 'listening')
+      .toArray();
+    set = new Set<string>();
+    for (const c of existingListening) {
+      set.add(makeKey(c.lemma || c.word || '', c.reading || ''));
+    }
+    existingKeysByLang.set(langId, set);
+    return set;
+  };
+
+  for (const src of cards) {
+    const normalizedLemma = (src.lemma || src.word || '').trim();
+    const normalizedReading = (src.reading || '').trim();
+    const langKeys = await getLangKeys(src.languageId);
+    const key = makeKey(normalizedLemma, normalizedReading);
+
+    if (langKeys.has(key)) {
+      skippedDuplicate++;
+      continue;
+    }
+
+    langKeys.add(key);
+    const sentenceText = (src.cloze?.sentence || src.sentence || '').trim();
+    const effectiveTarget: 'word' | 'sentence' =
+      listeningTarget === 'sentence' && sentenceText ? 'sentence' : 'word';
+
+    const newCard: CardItem = {
+      id: generateEntityId('card'),
+      deckId: src.deckId,
+      languageId: src.languageId,
+      cardType: 'listening',
+      word: src.word,
+      lemma: normalizedLemma,
+      reading: normalizedReading,
+      furiganaSegments: src.furiganaSegments,
+      meaning: src.meaning,
+      partOfSpeech: src.partOfSpeech || '',
+      level: src.level || '',
+      frequencyBand: src.frequencyBand || '',
+      sentence: sentenceText,
+      sentenceFuriganaSegments: src.sentenceFuriganaSegments,
+      listeningTarget: effectiveTarget,
+      sourceDocTitle: src.sourceDocTitle || '',
+      sourceDocId: src.sourceDocId,
+      tags: Array.isArray(src.tags) ? [...src.tags] : [],
+      notes: src.notes || '',
+      createdAt: now,
+      updatedAt: now,
+      suspended: false,
+      buried: false,
+      due: now,
+      stability: 0,
+      difficulty: 0,
+      reps: 0,
+      lapses: 0,
+      state: 0,
+      scheduledDays: 0,
+      elapsedDays: 0,
+      learningSteps: 0,
+    };
+
+    created.push(newCard);
+  }
+
+  if (created.length > 0) {
+    await db.cards.bulkPut(created);
+    invalidateStatsCache();
+  }
+
+  return {
+    created,
+    skippedDuplicate,
+  };
 }
 
 export async function updateCard(id: string, patch: Partial<CardItem>): Promise<void> {

@@ -6,6 +6,12 @@ import { ensureDefaultDeck, generateEntityId } from '../db/cards';
 import type { FuriganaSegment } from './languagePack';
 import { buildFurigana } from '../packs/japanese/kanaUtils';
 import { parseInlineFurigana, parseTagsCell, type DuplicateImportMode } from './cardCsvImport';
+import {
+  buildClozeDuplicateKey,
+  getEffectiveClozeData,
+  parseAnkiClozeMarkup,
+  type ClozeData,
+} from './cloze';
 import { invalidateStatsCache } from './statsCache';
 import { logEvent } from './eventLogger';
 
@@ -46,6 +52,7 @@ export interface ApkgNoteTypeInfo {
   noteCount: number;
   sampleFields: string[];
   defaultMapping: ApkgCardField[];
+  isClozeModel: boolean;
 }
 
 export interface ApkgInspectSummary {
@@ -100,6 +107,9 @@ export interface ApkgImportResult {
   createdDeckNames: string[];
   failedNotes: ApkgFailedNote[];
   cancelled: boolean;
+  clozeCardsCreated?: number;
+  unsupportedClozeCount?: number;
+  clozeNotices?: string[];
 }
 
 export const ANKI_DUMMY_UPDATE_MESSAGE = 'Please update to the latest Anki version';
@@ -207,6 +217,33 @@ export function parseAnkiFuriganaField(rawHtml: string): {
   return parseInlineFurigana(decoded);
 }
 
+/**
+ * Strips Anki HTML and bracket furigana while leaving `{{c1::...}}` cloze tags
+ * intact so `parseAnkiClozeMarkup` computes accurate plain-sentence offsets.
+ */
+export function ankiHtmlToPlainTextForCloze(rawHtml: string): string {
+  if (!rawHtml) return '';
+  const safe = sanitizeAnkiHtml(rawHtml);
+  const plain = safe
+    .replace(/<rt\b[^>]*>[\s\S]*?<\/rt>/gi, '')
+    .replace(/<rp\b[^>]*>[\s\S]*?<\/rp>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]*>/g, '');
+
+  const decoded = decodeBasicHtmlEntities(plain)
+    .replace(/\r\n/g, '\n')
+    .replace(/([^\s\[{}:<>]+)\[([^\]]+)\]/g, '$1');
+
+  return decoded.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function unwrapAnkiClozeMarkupForFurigana(rawHtml: string): string {
+  return (rawHtml || '').replace(/\{\{c\d+::([\s\S]*?)\}\}/g, (_full, body: string) => {
+    const hintIdx = body.indexOf('::');
+    return hintIdx >= 0 ? body.slice(0, hintIdx) : body;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Auto-Detect Anki Note-Type Field Mapping
 // ---------------------------------------------------------------------------
@@ -307,7 +344,10 @@ const ANKI_FIELD_MATCHERS: {
   },
 ];
 
-export function detectDefaultApkgFieldMapping(fieldNames: string[]): ApkgCardField[] {
+export function detectDefaultApkgFieldMapping(
+  fieldNames: string[],
+  isClozeModel = false
+): ApkgCardField[] {
   const mapping: ApkgCardField[] = fieldNames.map(() => 'ignore');
   const used = new Set<ApkgCardField>();
 
@@ -315,8 +355,29 @@ export function detectDefaultApkgFieldMapping(fieldNames: string[]): ApkgCardFie
   const normalized = fieldNames.map((n) => n.trim().toLowerCase());
   const compactList = normalized.map((n) => n.replace(/[\s_-]+/g, ''));
 
+  if (isClozeModel) {
+    for (let i = 0; i < fieldNames.length; i++) {
+      const compact = compactList[i];
+      if (!compact) continue;
+      if (
+        !used.has('sentence') &&
+        (compact === 'text' || compact === 'cloze' || compact === 'clozetext' || compact === 'sentence')
+      ) {
+        mapping[i] = 'sentence';
+        used.add('sentence');
+      } else if (
+        !used.has('notes') &&
+        (compact === 'backextra' || compact === 'extra')
+      ) {
+        mapping[i] = 'notes';
+        used.add('notes');
+      }
+    }
+  }
+
   // Exact match pass
   for (let i = 0; i < fieldNames.length; i++) {
+    if (mapping[i] !== 'ignore') continue;
     const raw = normalized[i];
     const compact = compactList[i];
     if (!compact) continue;
@@ -350,15 +411,23 @@ export function detectDefaultApkgFieldMapping(fieldNames: string[]): ApkgCardFie
     }
   }
 
-  // Fallback: if still no `word` mapped, map field 0 -> word and field 1 -> meaning
-  if (!used.has('word') && fieldNames.length >= 1) {
-    mapping[0] = 'word';
-    used.add('word');
-  }
-  if (!used.has('meaning') && fieldNames.length >= 2) {
-    const freeIdx = mapping.findIndex((f) => f === 'ignore');
-    if (freeIdx !== -1) {
-      mapping[freeIdx] = 'meaning';
+  // Fallback
+  if (isClozeModel) {
+    if (!used.has('sentence') && !used.has('word') && fieldNames.length >= 1) {
+      const freeIdx = mapping.findIndex((f) => f === 'ignore');
+      mapping[freeIdx !== -1 ? freeIdx : 0] = 'sentence';
+      used.add('sentence');
+    }
+  } else {
+    if (!used.has('word') && fieldNames.length >= 1) {
+      mapping[0] = 'word';
+      used.add('word');
+    }
+    if (!used.has('meaning') && fieldNames.length >= 2) {
+      const freeIdx = mapping.findIndex((f) => f === 'ignore');
+      if (freeIdx !== -1) {
+        mapping[freeIdx] = 'meaning';
+      }
     }
   }
 
@@ -468,6 +537,7 @@ export function openAndInspectAnkiDb(
   deckNameById: Map<string, string>;
   modelFieldNamesById: Map<string, string[]>;
   modelNameById: Map<string, string>;
+  modelIsClozeById: Map<string, boolean>;
 } {
   const dbConn = new sqlJs.Database(sqliteBytes);
 
@@ -487,6 +557,7 @@ export function openAndInspectAnkiDb(
     const deckNameById = new Map<string, string>();
     const modelFieldNamesById = new Map<string, string[]>();
     const modelNameById = new Map<string, string>();
+    const modelIsClozeById = new Map<string, boolean>();
 
     // 1. Read col.decks / col.models JSON when present
     if (sqliteTableExists(dbConn, 'col')) {
@@ -502,6 +573,7 @@ export function openAndInspectAnkiDb(
             for (const [mid, modelObj] of Object.entries(modelsJson)) {
               if (!modelObj) continue;
               modelNameById.set(mid, String(modelObj.name || `Note Type ${mid}`));
+              modelIsClozeById.set(mid, Number(modelObj.type) === 1);
               const flds = Array.isArray(modelObj.flds)
                 ? [...modelObj.flds]
                     .sort((a, b) => (a.ord ?? 0) - (b.ord ?? 0))
@@ -585,9 +657,10 @@ export function openAndInspectAnkiDb(
     for (const [mid, count] of noteCountByModel.entries()) {
       let fieldNames = modelFieldNamesById.get(mid) || [];
       const sampleRes = dbConn.exec(
-        `SELECT flds FROM notes WHERE mid = ${Number(mid) || 0} LIMIT 1;`
+        `SELECT flds FROM notes WHERE mid = ${Number(mid) || 0} LIMIT 5;`
       );
-      const sampleRaw = String(sampleRes[0]?.values?.[0]?.[0] || '');
+      const sampleRows = sampleRes[0]?.values || [];
+      const sampleRaw = String(sampleRows[0]?.[0] || '');
       const sampleFields = sampleRaw ? sampleRaw.split('\x1f') : [];
 
       if (fieldNames.length === 0 && sampleFields.length > 0) {
@@ -595,13 +668,20 @@ export function openAndInspectAnkiDb(
         modelFieldNamesById.set(mid, fieldNames);
       }
 
+      const hasClozeMarkupInSample = sampleRows.some((r) =>
+        /\{\{c\d+::/.test(String(r[0] || ''))
+      );
+      const isClozeModel = Boolean(modelIsClozeById.get(mid)) || hasClozeMarkupInSample;
+      modelIsClozeById.set(mid, isClozeModel);
+
       noteTypes.push({
         id: mid,
         name: modelNameById.get(mid) || `Note Type ${mid}`,
         fieldNames,
         noteCount: count,
         sampleFields,
-        defaultMapping: detectDefaultApkgFieldMapping(fieldNames),
+        defaultMapping: detectDefaultApkgFieldMapping(fieldNames, isClozeModel),
+        isClozeModel,
       });
     }
 
@@ -658,6 +738,7 @@ export function openAndInspectAnkiDb(
       deckNameById,
       modelFieldNamesById,
       modelNameById,
+      modelIsClozeById,
     };
   } catch (err) {
     dbConn.close();
@@ -743,13 +824,18 @@ export interface ApkgWriteSessionContext {
   resolvedTargetDeckId: string;
   deckByName: Map<string, DeckItem>;
   existingCardByKey: Map<string, CardItem>;
+  existingClozeByKey: Map<string, CardItem>;
   createdDeckNames: string[];
   modelNameById: Map<string, string>;
+  modelIsClozeById?: Map<string, boolean>;
+  modelFieldNamesById?: Map<string, string[]>;
 }
 
 export async function createApkgWriteSession(
   options: ApkgImportOptions,
-  modelNameById: Map<string, string>
+  modelNameById: Map<string, string>,
+  modelIsClozeById?: Map<string, boolean>,
+  modelFieldNamesById?: Map<string, string[]>
 ): Promise<ApkgWriteSessionContext> {
   let resolvedTargetDeckId = options.targetDeckId || '';
   const createdDeckNames: string[] = [];
@@ -795,7 +881,24 @@ export async function createApkgWriteSession(
 
   const allCards = await db.cards.where('languageId').equals(options.languageId).toArray();
   const existingCardByKey = new Map<string, CardItem>();
+  const existingClozeByKey = new Map<string, CardItem>();
   for (const c of allCards) {
+    if (c.cardType === 'cloze') {
+      const eff = getEffectiveClozeData(c);
+      if (eff) {
+        const ck = buildClozeDuplicateKey({
+          languageId: c.languageId,
+          lemma: eff.lemma || c.lemma || c.word,
+          sentence: eff.sentence,
+          start: eff.start,
+          end: eff.end,
+        });
+        if (!existingClozeByKey.has(ck)) {
+          existingClozeByKey.set(ck, c);
+        }
+      }
+      continue;
+    }
     const k = `${(c.lemma || c.word).trim()}\x1e${(c.reading || '').trim()}\x1e${c.cardType}`;
     if (!existingCardByKey.has(k)) {
       existingCardByKey.set(k, c);
@@ -807,8 +910,11 @@ export async function createApkgWriteSession(
     resolvedTargetDeckId,
     deckByName,
     existingCardByKey,
+    existingClozeByKey,
     createdDeckNames,
     modelNameById,
+    modelIsClozeById,
+    modelFieldNamesById,
   };
 }
 
@@ -819,11 +925,17 @@ export async function processApkgNoteBatch(
   created: number;
   updated: number;
   skippedDuplicates: number;
+  clozeCreated: number;
+  unsupportedClozeCount: number;
+  clozeWarnings: string[];
   failed: ApkgFailedNote[];
 }> {
   let created = 0;
   let updated = 0;
   let skippedDuplicates = 0;
+  let clozeCreated = 0;
+  let unsupportedClozeCount = 0;
+  const clozeWarnings: string[] = [];
   const failed: ApkgFailedNote[] = [];
   const toWrite: CardItem[] = [];
   const batchBaseTime = Date.now();
@@ -891,6 +1003,206 @@ export async function processApkgNoteBatch(
         }
       }
 
+      const noteTags = parseTagsCell(rec.tags);
+      const mappedTags = extraTagParts.flatMap((t) => parseTagsCell(t));
+      const allTags = Array.from(new Set([...noteTags, ...mappedTags]));
+      const cleanNotes = rawNotesParts.filter(Boolean).join('\n');
+
+      const hasClozeTags = /\{\{c\d+::/.test(rawSentenceHtml) || /\{\{c\d+::/.test(rawWordHtml);
+      const isClozeNote = Boolean(ctx.modelIsClozeById?.get(rec.modelId)) || hasClozeTags;
+
+      if (isClozeNote) {
+        const rawClozeField = /\{\{c\d+::/.test(rawSentenceHtml)
+          ? rawSentenceHtml
+          : /\{\{c\d+::/.test(rawWordHtml)
+          ? rawWordHtml
+          : rawSentenceHtml || rawWordHtml;
+
+        if (!rawClozeField.trim()) {
+          unsupportedClozeCount += 1;
+          failed.push({
+            noteId: rec.noteId,
+            modelName,
+            word: '',
+            reason: 'Missing cloze text field.',
+            rawFields: rec.fields,
+          });
+          continue;
+        }
+
+        const clozeParse = parseAnkiClozeMarkup(rawClozeField, ankiHtmlToPlainTextForCloze);
+        if (!clozeParse.isCloze) {
+          unsupportedClozeCount += 1;
+          failed.push({
+            noteId: rec.noteId,
+            modelName,
+            word: ankiHtmlToPlainText(rawClozeField).slice(0, 40),
+            reason: 'Cloze note contains no {{c1::...}} deletion.',
+            rawFields: rec.fields,
+          });
+          continue;
+        }
+
+        if (!clozeParse.supported) {
+          unsupportedClozeCount += 1;
+          failed.push({
+            noteId: rec.noteId,
+            modelName,
+            word: clozeParse.answer || ankiHtmlToPlainText(rawClozeField).slice(0, 40),
+            reason: clozeParse.unsupportedReason || 'Unsupported Anki cloze syntax.',
+            rawFields: rec.fields,
+          });
+          continue;
+        }
+
+        if (clozeParse.unsupportedReason) {
+          clozeWarnings.push(`Note #${rec.noteId}: ${clozeParse.unsupportedReason}`);
+        }
+
+        const answer = clozeParse.answer;
+        const cleanSentence = clozeParse.sentence;
+        const separateWordText =
+          rawWordHtml && rawWordHtml !== rawClozeField
+            ? parseAnkiFuriganaField(rawWordHtml).plainText.trim()
+            : '';
+        const cleanWord = separateWordText || answer;
+        const lemma = cleanWord || answer;
+
+        const parsedReading = parseAnkiFuriganaField(rawReadingHtml);
+        const cleanReading = (parsedReading.plainText || '').trim();
+        const cleanMeaning = ankiHtmlToPlainText(rawMeaningHtml);
+        const hint = clozeParse.hint || cleanMeaning;
+
+        // Extract sentence furigana segments from unwrapped cloze HTML/brackets OR auxiliary SentenceFuriganaHTML
+        let sentenceFurigana: FuriganaSegment[] | undefined;
+        const unwrappedClozeHtml = unwrapAnkiClozeMarkupForFurigana(rawClozeField);
+        const parsedFromCloze = parseAnkiFuriganaField(unwrappedClozeHtml);
+        if (
+          parsedFromCloze.segments &&
+          parsedFromCloze.segments.some((s) => Boolean(s.ruby)) &&
+          parsedFromCloze.plainText.trim() === cleanSentence
+        ) {
+          sentenceFurigana = parsedFromCloze.segments;
+        } else {
+          const fieldNames = ctx.modelFieldNamesById?.get(rec.modelId);
+          if (fieldNames) {
+            const sfIdx = fieldNames.findIndex(
+              (fn) => fn.trim().toLowerCase().replace(/[\s_-]+/g, '') === 'sentencefuriganahtml'
+            );
+            if (sfIdx !== -1 && rec.fields[sfIdx]) {
+              const parsedAux = parseAnkiFuriganaField(rec.fields[sfIdx]);
+              if (
+                parsedAux.segments &&
+                parsedAux.segments.some((s) => Boolean(s.ruby)) &&
+                parsedAux.plainText.trim() === cleanSentence
+              ) {
+                sentenceFurigana = parsedAux.segments;
+              }
+            }
+          }
+        }
+
+        let wordFurigana: FuriganaSegment[] | undefined;
+        if (cleanReading && /[\u4e00-\u9faf\u3400-\u4dbf々〆〇]/.test(cleanWord)) {
+          wordFurigana = buildFurigana(cleanWord, cleanReading, cleanWord);
+        }
+
+        const clozePayload: ClozeData = {
+          sentence: cleanSentence,
+          start: clozeParse.start,
+          end: clozeParse.end,
+          answer,
+          lemma,
+          reading: cleanReading,
+          hint,
+        };
+
+        const deckId = await resolveDeckForNote(rec.deckName);
+        const dupKey = buildClozeDuplicateKey({
+          languageId: ctx.options.languageId,
+          lemma,
+          sentence: cleanSentence,
+          start: clozeParse.start,
+          end: clozeParse.end,
+        });
+        const existingDup = ctx.existingClozeByKey.get(dupKey);
+
+        if (existingDup && ctx.options.duplicateMode === 'skip') {
+          skippedDuplicates += 1;
+          continue;
+        }
+
+        const now = batchBaseTime + i;
+        if (existingDup && ctx.options.duplicateMode === 'update') {
+          const mergedTags =
+            allTags.length > 0
+              ? Array.from(new Set([...(existingDup.tags || []), ...allTags]))
+              : existingDup.tags || [];
+
+          const updatedCard: CardItem = {
+            ...existingDup,
+            deckId: ctx.options.deckMode === 'keep' ? deckId : ctx.resolvedTargetDeckId,
+            word: cleanWord,
+            lemma,
+            reading: cleanReading,
+            furiganaSegments: wordFurigana ?? existingDup.furiganaSegments,
+            meaning: cleanMeaning || clozeParse.hint || existingDup.meaning,
+            sentence: cleanSentence,
+            sentenceFuriganaSegments: sentenceFurigana ?? existingDup.sentenceFuriganaSegments,
+            cloze: clozePayload,
+            tags: mergedTags,
+            notes: cleanNotes || existingDup.notes || '',
+            updatedAt: now,
+          };
+          toWrite.push(updatedCard);
+          ctx.existingClozeByKey.set(dupKey, updatedCard);
+          updated += 1;
+          continue;
+        }
+
+        const newClozeCard: CardItem = {
+          id: generateEntityId('card'),
+          deckId,
+          languageId: ctx.options.languageId,
+          cardType: 'cloze',
+          word: cleanWord,
+          lemma,
+          reading: cleanReading,
+          furiganaSegments: wordFurigana,
+          meaning: cleanMeaning || clozeParse.hint,
+          partOfSpeech: '',
+          level: '',
+          frequencyBand: '',
+          sentence: cleanSentence,
+          sentenceFuriganaSegments: sentenceFurigana,
+          cloze: clozePayload,
+          sourceDocTitle: '',
+          tags: allTags,
+          notes: cleanNotes,
+          createdAt: now,
+          updatedAt: now,
+          suspended: false,
+          buried: false,
+          due: now,
+          stability: 0,
+          difficulty: 0,
+          reps: 0,
+          lapses: 0,
+          state: 0,
+          scheduledDays: 0,
+          elapsedDays: 0,
+          learningSteps: 0,
+        };
+
+        toWrite.push(newClozeCard);
+        if (!ctx.existingClozeByKey.has(dupKey)) {
+          ctx.existingClozeByKey.set(dupKey, newClozeCard);
+        }
+        created += 1;
+        clozeCreated += 1;
+        continue;
+      }
+
       const parsedWord = parseAnkiFuriganaField(rawWordHtml);
       const cleanWord = parsedWord.plainText.trim();
 
@@ -945,11 +1257,6 @@ export async function processApkgNoteBatch(
       const parsedSentence = parseAnkiFuriganaField(rawSentenceHtml);
       const cleanSentence = (parsedSentence.plainText || ankiHtmlToPlainText(rawSentenceHtml)).trim();
       const sentenceFurigana = parsedSentence.segments;
-
-      const noteTags = parseTagsCell(rec.tags);
-      const mappedTags = extraTagParts.flatMap((t) => parseTagsCell(t));
-      const allTags = Array.from(new Set([...noteTags, ...mappedTags]));
-      const cleanNotes = rawNotesParts.filter(Boolean).join('\n');
 
       const deckId = await resolveDeckForNote(rec.deckName);
       const lemma = cleanWord;
@@ -1043,7 +1350,15 @@ export async function processApkgNoteBatch(
     await db.cards.bulkPut(toWrite);
   }
 
-  return { created, updated, skippedDuplicates, failed };
+  return {
+    created,
+    updated,
+    skippedDuplicates,
+    clozeCreated,
+    unsupportedClozeCount,
+    clozeWarnings,
+    failed,
+  };
 }
 
 export async function finalizeApkgImportSideEffects(
@@ -1056,6 +1371,7 @@ export async function finalizeApkgImportSideEffects(
       languageId,
       notesRead: result.notesRead,
       cardsCreated: result.cardsCreated,
+      clozeCardsCreated: result.clozeCardsCreated ?? 0,
       cardsUpdated: result.cardsUpdated,
       skippedDuplicates: result.skippedDuplicates,
       skippedMediaCount: result.skippedMediaCount,

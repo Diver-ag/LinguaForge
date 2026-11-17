@@ -27,7 +27,13 @@ import {
   type RatingPreviewOption,
 } from '../../core/fsrsScheduler';
 import { FuriganaText } from '../../ui/FuriganaText';
-import { HighlightedSentence } from './HighlightedSentence';
+import { HighlightedSentence, ClozeSentenceView } from './HighlightedSentence';
+import { formatClozeHint, getEffectiveClozeData } from '../../core/cloze';
+import {
+  isSpeechSynthesisSupported,
+  speakWithReliability,
+  stopActiveSpeech,
+} from '../../core/speech';
 import { CardEditModal } from '../cards/CardEditModal';
 import { getTodayReviewCount } from '../../core/statsEngine';
 import { DailyGoalRing } from '../../components/DailyGoalRing';
@@ -48,6 +54,8 @@ import {
   X,
   AlertTriangle,
   ArrowLeft,
+  Headphones,
+  Gauge,
 } from 'lucide-react';
 
 interface SessionStats {
@@ -132,6 +140,12 @@ export const ReviewView: React.FC = () => {
   const [isGrading, setIsGrading] = useState(false);
   const [leechAlertCard, setLeechAlertCard] = useState<CardItem | null>(null);
   const [editingCard, setEditingCard] = useState<CardItem | null>(null);
+
+  // Listening & TTS playback state
+  const ttsSupported = isSpeechSynthesisSupported();
+  const [isSpeakingAudio, setIsSpeakingAudio] = useState(false);
+  const [speechError, setSpeechError] = useState<string | null>(null);
+  const [slowSpeed, setSlowSpeed] = useState(false);
 
   // Custom Study modal state
   const [showCustomModal, setShowCustomModal] = useState(false);
@@ -280,17 +294,92 @@ export const ReviewView: React.FC = () => {
     };
   }, [currentCard, studySettings]);
 
+  const getListeningSpeechText = useCallback((card: CardItem): string => {
+    const sentence = (card.sentence || '').trim();
+    if (card.listeningTarget === 'sentence' && sentence.length > 0) {
+      return sentence;
+    }
+    return card.word || '';
+  }, []);
+
   const speakText = useCallback(
-    (text: string) => {
-      if (!text || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-      window.speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = pack.ttsCode || 'ja-JP';
-      u.rate = 0.85;
-      window.speechSynthesis.speak(u);
+    (text: string, overrideRate?: number) => {
+      if (!text) return;
+      const ttsCode = pack.ttsCode || 'ja-JP';
+      const preferredVoiceId =
+        studySettings.speechVoiceByLang[pack.id] || studySettings.speechVoiceByLang[ttsCode];
+      const rate =
+        overrideRate !== undefined
+          ? overrideRate
+          : slowSpeed
+          ? 0.7
+          : studySettings.speechRate;
+      setSpeechError(null);
+      setIsSpeakingAudio(true);
+      speakWithReliability({
+        text,
+        ttsCode,
+        preferredVoiceId,
+        rate,
+        onStart: () => {
+          setSpeechError(null);
+          setIsSpeakingAudio(true);
+        },
+        onEnd: () => setIsSpeakingAudio(false),
+        onError: (msg) => {
+          setIsSpeakingAudio(false);
+          setSpeechError(msg);
+        },
+      });
     },
-    [pack.ttsCode]
+    [pack.id, pack.ttsCode, studySettings.speechVoiceByLang, studySettings.speechRate, slowSpeed]
   );
+
+  // Auto-play audio when a listening card appears (if enabled in Speech settings)
+  // and always stop prior audio cleanly when advancing cards or leaving review.
+  useEffect(() => {
+    stopActiveSpeech();
+    setIsSpeakingAudio(false);
+    setSpeechError(null);
+
+    if (!currentCard || currentCard.cardType !== 'listening' || editingCard) {
+      return () => {
+        stopActiveSpeech();
+        setIsSpeakingAudio(false);
+      };
+    }
+
+    if (studySettings.listeningAutoPlay) {
+      const targetText = getListeningSpeechText(currentCard);
+      const rate = slowSpeed ? 0.7 : studySettings.speechRate;
+      const ttsCode = pack.ttsCode || 'ja-JP';
+      const preferredVoiceId =
+        studySettings.speechVoiceByLang[pack.id] || studySettings.speechVoiceByLang[ttsCode];
+      setIsSpeakingAudio(true);
+      speakWithReliability({
+        text: targetText,
+        ttsCode,
+        preferredVoiceId,
+        rate,
+        onStart: () => {
+          setSpeechError(null);
+          setIsSpeakingAudio(true);
+        },
+        onEnd: () => setIsSpeakingAudio(false),
+        onError: (msg) => {
+          setIsSpeakingAudio(false);
+          setSpeechError(msg);
+        },
+      });
+    }
+
+    return () => {
+      stopActiveSpeech();
+      setIsSpeakingAudio(false);
+    };
+    // Trigger specifically on card transition or session start (not when toggling slowSpeed)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentCard?.id, session?.title]);
 
   const startDeckStudy = async (deckId: string) => {
     setHomeError(null);
@@ -930,6 +1019,10 @@ export const ReviewView: React.FC = () => {
                     ? 'Word → Meaning'
                     : currentCard.cardType === 'meaning_to_word'
                     ? 'Meaning → Word'
+                    : currentCard.cardType === 'cloze'
+                    ? 'Cloze'
+                    : currentCard.cardType === 'listening'
+                    ? 'Listening'
                     : 'Reading'}
                 </span>
                 <span className="tabular-nums">
@@ -978,6 +1071,133 @@ export const ReviewView: React.FC = () => {
                     {currentCard.word}
                   </div>
                 )}
+
+                {currentCard.cardType === 'cloze' && (() => {
+                  const cloze = getEffectiveClozeData(currentCard);
+                  const hintText = formatClozeHint(currentCard, studySettings.clozeHintMode);
+                  return (
+                    <div className="space-y-4 max-w-xl mx-auto">
+                      <div className="text-xl sm:text-2xl font-medium text-[var(--text)] leading-relaxed">
+                        {cloze ? (
+                          <ClozeSentenceView
+                            sentence={cloze.sentence}
+                            start={cloze.start}
+                            end={cloze.end}
+                            mode="front"
+                            segments={currentCard.sentenceFuriganaSegments}
+                            furiganaMode={furiganaMode}
+                          />
+                        ) : (
+                          currentCard.sentence || currentCard.word
+                        )}
+                      </div>
+                      {hintText && (
+                        <div className="text-sm font-medium text-[var(--text-muted)]">
+                          Hint: {hintText}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {currentCard.cardType === 'listening' && (() => {
+                  const speechText = getListeningSpeechText(currentCard);
+                  const isSentenceAudio =
+                    currentCard.listeningTarget === 'sentence' &&
+                    Boolean((currentCard.sentence || '').trim());
+                  const activeRate = slowSpeed ? 0.7 : studySettings.speechRate;
+
+                  return (
+                    <div className="space-y-5 max-w-md mx-auto">
+                      <div className="flex flex-col items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => speakText(speechText, activeRate)}
+                          aria-label={
+                            isSentenceAudio ? 'Play sentence audio' : 'Play word audio'
+                          }
+                          className={`w-28 h-28 rounded-full flex items-center justify-center shadow-lg transition active:scale-95 ${
+                            isSpeakingAudio
+                              ? 'bg-indigo-700 text-white ring-4 ring-indigo-500/35 animate-pulse'
+                              : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                          }`}
+                        >
+                          <Volume2 className="w-12 h-12" />
+                        </button>
+
+                        <div className="space-y-0.5">
+                          <div className="text-sm font-bold text-[var(--text)]">
+                            {isSpeakingAudio
+                              ? 'Playing audio...'
+                              : 'Tap to listen'}
+                          </div>
+                          <div className="text-xs text-[var(--text-muted)] flex items-center justify-center gap-1.5 tabular-nums">
+                            <Headphones className="w-3.5 h-3.5" />
+                            <span>
+                              {isSentenceAudio ? 'Sentence audio' : 'Word audio'} ·{' '}
+                              {activeRate.toFixed(2).replace(/\.?0+$/, '')}x
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Replay + 0.7x Slower toggle */}
+                      <div className="flex items-center justify-center gap-2.5 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => speakText(speechText, activeRate)}
+                          className="min-h-[44px] px-4 py-2 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] hover:bg-[var(--border)] text-xs font-bold text-[var(--text)] inline-flex items-center gap-1.5 transition"
+                        >
+                          <RotateCcw className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                          <span>Replay</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          aria-pressed={slowSpeed}
+                          onClick={() => {
+                            const nextSlow = !slowSpeed;
+                            setSlowSpeed(nextSlow);
+                            speakText(
+                              speechText,
+                              nextSlow ? 0.7 : studySettings.speechRate
+                            );
+                          }}
+                          className={`min-h-[44px] px-4 py-2 rounded-xl border text-xs font-bold inline-flex items-center gap-1.5 transition tabular-nums ${
+                            slowSpeed
+                              ? 'border-indigo-600 bg-[var(--accent-subtle)] text-[var(--accent-text)]'
+                              : 'border-[var(--border)] bg-[var(--surface-muted)] hover:bg-[var(--border)] text-[var(--text-secondary)]'
+                          }`}
+                        >
+                          <Gauge className="w-4 h-4" />
+                          <span>0.7x Slower</span>
+                        </button>
+                      </div>
+
+                      {!ttsSupported && !speechError && (
+                        <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-200 text-left">
+                          Text-to-speech is not supported in this browser, so listening audio cannot play here.
+                        </div>
+                      )}
+
+                      {speechError && (
+                        <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 flex items-center justify-between gap-3 text-xs text-rose-800 dark:text-rose-200 text-left">
+                          <div className="flex items-center gap-2">
+                            <AlertCircle className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
+                            <span>{speechError}</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => speakText(speechText, activeRate)}
+                            className="min-h-[36px] px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold shrink-0"
+                          >
+                            Retry
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* BACK FACE (after reveal) */}
@@ -1098,6 +1318,107 @@ export const ReviewView: React.FC = () => {
                     </div>
                   )}
 
+                  {currentCard.cardType === 'cloze' && (() => {
+                    const cloze = getEffectiveClozeData(currentCard);
+                    const answerWord = cloze?.answer || currentCard.word;
+                    const readingText = cloze?.reading || currentCard.reading;
+                    return (
+                      <div className="space-y-4 text-center">
+                        {cloze && (
+                          <div className="p-4 rounded-2xl bg-[var(--surface-muted)] text-base sm:text-lg text-[var(--text)] leading-relaxed max-w-xl mx-auto">
+                            <ClozeSentenceView
+                              sentence={cloze.sentence}
+                              start={cloze.start}
+                              end={cloze.end}
+                              mode="back"
+                              segments={currentCard.sentenceFuriganaSegments}
+                              furiganaMode={furiganaMode}
+                            />
+                          </div>
+                        )}
+                        <div className="text-2xl sm:text-3xl font-bold text-[var(--text)]">
+                          {answerWord}
+                        </div>
+                        {readingText && (
+                          <div className="text-base font-semibold text-indigo-600 dark:text-indigo-400">
+                            {readingText}
+                          </div>
+                        )}
+                        {currentCard.meaning && (
+                          <div className="text-lg font-medium text-[var(--text-secondary)]">
+                            {currentCard.meaning}
+                          </div>
+                        )}
+                        {(currentCard.partOfSpeech || currentCard.level) && (
+                          <div className="flex items-center justify-center gap-2 text-xs text-[var(--text-muted)]">
+                            {currentCard.partOfSpeech && <span>{currentCard.partOfSpeech}</span>}
+                            {currentCard.partOfSpeech && currentCard.level && (
+                              <span aria-hidden="true">·</span>
+                            )}
+                            {currentCard.level && (
+                              <span className="font-semibold text-[var(--text-secondary)]">
+                                {currentCard.level}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {currentCard.cardType === 'listening' && (
+                    <div className="space-y-4 text-center">
+                      <div className="text-3xl sm:text-4xl font-bold text-[var(--text)] leading-snug">
+                        <FuriganaText
+                          segments={currentCard.furiganaSegments}
+                          text={currentCard.word}
+                          reading={currentCard.reading}
+                          furiganaMode={furiganaMode}
+                        />
+                      </div>
+                      {currentCard.reading && (
+                        <div className="text-base font-semibold text-indigo-600 dark:text-indigo-400">
+                          {currentCard.reading}
+                        </div>
+                      )}
+                      {currentCard.meaning && (
+                        <div className="text-xl font-bold text-[var(--text)] leading-relaxed">
+                          {currentCard.meaning}
+                        </div>
+                      )}
+                      {(currentCard.partOfSpeech || currentCard.level || currentCard.frequencyBand) && (
+                        <div className="flex items-center justify-center flex-wrap gap-2 text-xs text-[var(--text-muted)]">
+                          {currentCard.partOfSpeech && <span>{currentCard.partOfSpeech}</span>}
+                          {currentCard.partOfSpeech && currentCard.level && (
+                            <span aria-hidden="true">·</span>
+                          )}
+                          {currentCard.level && (
+                            <span className="font-semibold text-[var(--text-secondary)]">
+                              {currentCard.level}
+                            </span>
+                          )}
+                          {currentCard.frequencyBand && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span>{currentCard.frequencyBand}</span>
+                            </>
+                          )}
+                        </div>
+                      )}
+                      {currentCard.sentence && (
+                        <div className="p-3.5 rounded-2xl bg-[var(--surface-muted)] text-sm sm:text-base text-[var(--text-secondary)] leading-relaxed max-w-xl mx-auto">
+                          <HighlightedSentence
+                            sentence={currentCard.sentence}
+                            segments={currentCard.sentenceFuriganaSegments}
+                            targetWord={currentCard.word}
+                            targetLemma={currentCard.lemma}
+                            furiganaMode={furiganaMode}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {currentCard.notes && (
                     <p className="text-xs text-[var(--text-muted)] text-center max-w-lg mx-auto">
                       Note: {currentCard.notes}
@@ -1113,12 +1434,32 @@ export const ReviewView: React.FC = () => {
                     </div>
                     <button
                       type="button"
-                      onClick={() => speakText(currentCard.word)}
+                      onClick={() =>
+                        speakText(
+                          currentCard.cardType === 'cloze'
+                            ? currentCard.cloze?.sentence || currentCard.sentence || currentCard.word
+                            : currentCard.cardType === 'listening'
+                            ? getListeningSpeechText(currentCard)
+                            : currentCard.word
+                        )
+                      }
                       className="min-h-[40px] px-3.5 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] hover:bg-[var(--border)] text-[var(--text)] font-semibold inline-flex items-center gap-1.5 transition"
-                      aria-label={`Hear pronunciation of ${currentCard.word}`}
+                      aria-label={
+                        currentCard.cardType === 'cloze'
+                          ? 'Hear pronunciation of full sentence'
+                          : currentCard.cardType === 'listening'
+                          ? 'Replay listening card audio'
+                          : `Hear pronunciation of ${currentCard.word}`
+                      }
                     >
                       <Volume2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-                      <span>Listen</span>
+                      <span>
+                        {currentCard.cardType === 'cloze'
+                          ? 'Listen sentence'
+                          : currentCard.cardType === 'listening'
+                          ? 'Replay'
+                          : 'Listen'}
+                      </span>
                     </button>
                   </div>
                 </div>

@@ -2,8 +2,16 @@ import JSZip from 'jszip';
 import type { SqlJsStatic } from 'sql.js';
 import type { CardItem, CardType, DeckItem } from '../db/db';
 import { buildFurigana, furiganaSegmentsToAnki } from '../packs/japanese/kanaUtils';
+import {
+  formatAnkiClozeMarkup,
+  getEffectiveClozeData,
+  resolveClozeFromSentence,
+} from './cloze';
+import { formatAnkiTtsTag } from './speech';
 
 export const LINGUAFORGE_VOCAB_MODEL_ID = 1715000001001;
+export const LINGUAFORGE_CLOZE_MODEL_ID = 1715000001002;
+export const LINGUAFORGE_LISTENING_MODEL_ID = 1715000001003;
 export const ANKI_SCHEMA_VERSION = 11;
 export const ANKI_FIELD_SEPARATOR = '\x1f';
 
@@ -14,6 +22,7 @@ export interface AnkiExportOptions {
   useSubdeckPrefix: boolean;
   subdeckRootName: string; // e.g. "LinguaForge"
   languageName: string;
+  ttsLangCode?: string; // e.g. "ja-JP", "es-ES" for {{tts ...}} on listening cards
   includeAutoLevelTag: boolean;
   includeAutoSourceTag: boolean;
   includeAutoCardTypeTag: boolean;
@@ -65,6 +74,12 @@ export interface AnkiDeckDraft {
 export interface AnkiExportPlan {
   modelId: number;
   modelName: string;
+  clozeModelId?: number;
+  listeningModelId?: number;
+  hasVocabCards?: boolean;
+  hasClozeCards?: boolean;
+  hasListeningCards?: boolean;
+  ttsLangCode?: string;
   presentCardTypes: CardType[];
   fieldNames: string[];
   decks: AnkiDeckDraft[];
@@ -117,6 +132,7 @@ export type CsvColumnKey =
   | 'notes'
   | 'deck'
   | 'cardType'
+  | 'clozeText'
   | 'tags';
 
 export interface CsvExportOptions {
@@ -149,6 +165,33 @@ export const ANKI_VOCAB_FIELD_NAMES = [
   'Tags',
 ];
 
+export const ANKI_CLOZE_FIELD_NAMES = [
+  'Text',
+  'Back Extra',
+  'Reading',
+  'Meaning',
+  'SentenceFuriganaHTML',
+  'Level',
+  'Source',
+  'Notes',
+  'Tags',
+];
+
+export const ANKI_LISTENING_FIELD_NAMES = [
+  'AudioText',
+  'Word',
+  'FuriganaHTML',
+  'Reading',
+  'Meaning',
+  'Sentence',
+  'SentenceFuriganaHTML',
+  'AudioTargetLabel',
+  'Level',
+  'Source',
+  'Notes',
+  'Tags',
+];
+
 export const CSV_COLUMN_LABELS: Record<CsvColumnKey, string> = {
   word: 'Word',
   lemma: 'Lemma',
@@ -166,6 +209,7 @@ export const CSV_COLUMN_LABELS: Record<CsvColumnKey, string> = {
   notes: 'Notes',
   deck: 'Deck',
   cardType: 'CardType',
+  clozeText: 'ClozeText',
   tags: 'Tags',
 };
 
@@ -173,6 +217,8 @@ const CARD_TYPE_CANONICAL_ORDER: Record<CardType, number> = {
   word_to_meaning: 0,
   meaning_to_word: 1,
   reading: 2,
+  cloze: 3,
+  listening: 4,
 };
 
 // ---------------------------------------------------------------------------
@@ -541,7 +587,7 @@ export function collectCardTags(
 // ---------------------------------------------------------------------------
 
 const CARD_TYPE_TEMPLATE_DEFINITIONS: Record<
-  CardType,
+  Exclude<CardType, 'cloze' | 'listening'>,
   { name: string; qfmt: string; afmt: string }
 > = {
   word_to_meaning: {
@@ -618,6 +664,62 @@ const CARD_TYPE_TEMPLATE_DEFINITIONS: Record<
 </div>`,
   },
 };
+
+const ANKI_CLOZE_TEMPLATE = {
+  name: 'Cloze',
+  ord: 0,
+  qfmt: `<div class="lf-card">
+  <div class="lf-type-label">Cloze</div>
+  <div class="lf-sentence lf-cloze-prompt">{{cloze:Text}}</div>
+</div>`,
+  afmt: `<div class="lf-card">
+  <div class="lf-type-label">Cloze</div>
+  <div class="lf-sentence lf-cloze-prompt">{{cloze:Text}}</div>
+</div>
+<hr id="answer">
+<div class="lf-card lf-back">
+  {{#SentenceFuriganaHTML}}<div class="lf-sentence">{{SentenceFuriganaHTML}}</div>{{/SentenceFuriganaHTML}}
+  {{#Reading}}<div class="lf-reading">{{Reading}}</div>{{/Reading}}
+  {{#Meaning}}<div class="lf-meaning">{{Meaning}}</div>{{/Meaning}}
+  {{#Back Extra}}<div class="lf-sentence-meaning">{{Back Extra}}</div>{{/Back Extra}}
+  <div class="lf-badges">
+    {{#Level}}<span class="lf-badge lf-badge-level">{{Level}}</span>{{/Level}}
+  </div>
+  {{#Notes}}<div class="lf-notes">{{Notes}}</div>{{/Notes}}
+  {{#Source}}<div class="lf-source">Source: {{Source}}</div>{{/Source}}
+</div>`,
+};
+
+function buildAnkiListeningTemplate(ttsLangCode?: string) {
+  const ttsTag = formatAnkiTtsTag(ttsLangCode || 'ja-JP', 'AudioText');
+  return {
+    name: 'Listening',
+    ord: 0,
+    qfmt: `<div class="lf-card">
+  <div class="lf-type-label">Listening</div>
+  <div class="lf-word">${ttsTag}</div>
+  {{#AudioTargetLabel}}<div class="lf-notes">{{AudioTargetLabel}}</div>{{/AudioTargetLabel}}
+</div>`,
+    afmt: `<div class="lf-card">
+  <div class="lf-type-label">Listening</div>
+  <div class="lf-word">${ttsTag}</div>
+</div>
+<hr id="answer">
+<div class="lf-card lf-back">
+  <div class="lf-word">{{#FuriganaHTML}}{{FuriganaHTML}}{{/FuriganaHTML}}{{^FuriganaHTML}}{{Word}}{{/FuriganaHTML}}</div>
+  {{#Reading}}<div class="lf-reading">{{Reading}}</div>{{/Reading}}
+  <div class="lf-meaning">{{Meaning}}</div>
+  {{#Sentence}}
+  <div class="lf-sentence">{{#SentenceFuriganaHTML}}{{SentenceFuriganaHTML}}{{/SentenceFuriganaHTML}}{{^SentenceFuriganaHTML}}{{Sentence}}{{/SentenceFuriganaHTML}}</div>
+  {{/Sentence}}
+  <div class="lf-badges">
+    {{#Level}}<span class="lf-badge lf-badge-level">{{Level}}</span>{{/Level}}
+  </div>
+  {{#Notes}}<div class="lf-notes">{{Notes}}</div>{{/Notes}}
+  {{#Source}}<div class="lf-source">Source: {{Source}}</div>{{/Source}}
+</div>`,
+  };
+}
 
 export const ANKI_MODEL_CSS = `.card {
   font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic UI", "Meiryo", "Noto Sans JP", sans-serif;
@@ -916,6 +1018,27 @@ body.night_mode {
   .lf-sentence {
     font-size: 16px;
   }
+}
+
+.cloze {
+  font-weight: 700;
+  color: #4f46e5;
+}
+
+.nightMode .cloze,
+.night_mode .cloze {
+  color: #a5b4fc;
+}
+
+@media (prefers-color-scheme: dark) {
+  .cloze {
+    color: #a5b4fc;
+  }
+}
+
+.lf-cloze-prompt {
+  font-size: 20px;
+  text-align: center;
 }`;
 
 // ---------------------------------------------------------------------------
@@ -979,6 +1102,24 @@ function buildFuriganaFieldsForCard(card: CardItem, furiganaFormat: FuriganaExpo
  * become multiple cards of one Anki note; its GUID & ID derive from the
  * canonical anchor card ID so re-exporting produces identical Anki note GUIDs.
  */
+function buildCardClozeMarkup(card: CardItem): string {
+  const effective = getEffectiveClozeData(card);
+  if (effective) {
+    return formatAnkiClozeMarkup(effective, effective.hint || card.meaning || '');
+  }
+  const resolved = resolveClozeFromSentence({
+    sentence: card.sentence || card.word,
+    word: card.word,
+    lemma: card.lemma,
+    reading: card.reading,
+    meaning: card.meaning,
+  });
+  if (resolved) {
+    return formatAnkiClozeMarkup(resolved, resolved.hint || card.meaning || '');
+  }
+  return `{{c1::${card.word || ''}${card.meaning ? `::${card.meaning}` : ''}}}`;
+}
+
 export function buildAnkiExportPlan(
   selectedCards: CardItem[],
   decks: DeckItem[],
@@ -992,11 +1133,19 @@ export function buildAnkiExportPlan(
   for (const c of selectedCards) {
     presentTypesSet.add(c.cardType);
   }
-  const presentCardTypes = (['word_to_meaning', 'meaning_to_word', 'reading'] as CardType[]).filter(
-    (ct) => presentTypesSet.has(ct)
-  );
+  const presentVocabCardTypes = (
+    ['word_to_meaning', 'meaning_to_word', 'reading'] as Exclude<
+      CardType,
+      'cloze' | 'listening'
+    >[]
+  ).filter((ct) => presentTypesSet.has(ct));
+  const presentCardTypes: CardType[] = [
+    ...presentVocabCardTypes,
+    ...(presentTypesSet.has('cloze') ? (['cloze'] as CardType[]) : []),
+    ...(presentTypesSet.has('listening') ? (['listening'] as CardType[]) : []),
+  ];
   const templateOrdByType = new Map<CardType, number>();
-  presentCardTypes.forEach((ct, idx) => templateOrdByType.set(ct, idx));
+  presentVocabCardTypes.forEach((ct, idx) => templateOrdByType.set(ct, idx));
 
   // Canonical sort so note grouping and due ordinals are 100% deterministic
   const sortedCards = [...selectedCards].sort((a, b) => {
@@ -1008,7 +1157,13 @@ export function buildAnkiExportPlan(
     return a.id.localeCompare(b.id);
   });
 
-  // Group cards by note key; avoid duplicating the same cardType within one note
+  const vocabCards = sortedCards.filter(
+    (c) => c.cardType !== 'cloze' && c.cardType !== 'listening'
+  );
+  const clozeCards = sortedCards.filter((c) => c.cardType === 'cloze');
+  const listeningCards = sortedCards.filter((c) => c.cardType === 'listening');
+
+  // Group vocab cards by note key; avoid duplicating the same cardType within one note
   interface NoteGroup {
     anchor: CardItem;
     cards: CardItem[];
@@ -1017,7 +1172,7 @@ export function buildAnkiExportPlan(
   const groupsByKey = new Map<string, NoteGroup[]>();
   const orderedGroups: NoteGroup[] = [];
 
-  for (const card of sortedCards) {
+  for (const card of vocabCards) {
     const key = [
       card.languageId,
       card.deckId,
@@ -1075,7 +1230,6 @@ export function buildAnkiExportPlan(
     const nid = deterministicAnkiIntId('note', anchor.id, usedNoteIds);
     const guid = deterministicNoteGuid(anchor.id);
 
-    // Aggregate unique tags across cards in the note
     const tagSet = new Set<string>();
     for (const c of group.cards) {
       for (const t of collectCardTags(c, options)) {
@@ -1105,7 +1259,7 @@ export function buildAnkiExportPlan(
       anchor.frequencyBand || '', // Frequency
       plainSentence, // Sentence
       sentenceHtml, // SentenceFuriganaHTML
-      '', // SentenceMeaning (blank unless provided in future)
+      '', // SentenceMeaning
       anchor.sourceDocTitle || '', // Source
       anchor.notes || '', // Notes
       tagsFieldStr, // Tags
@@ -1145,8 +1299,8 @@ export function buildAnkiExportPlan(
         ord,
         mod: cardModSec,
         usn: -1,
-        type: 0, // New card
-        queue: 0, // New queue
+        type: 0,
+        queue: 0,
         due: dueOrdinal++,
         ivl: 0,
         factor: 0,
@@ -1161,9 +1315,176 @@ export function buildAnkiExportPlan(
     }
   }
 
+  // Add Cloze notes & cards under LinguaForge Cloze model (Anki model type 1)
+  for (const c of clozeCards) {
+    const nid = deterministicAnkiIntId('note', c.id, usedNoteIds);
+    const guid = deterministicNoteGuid(c.id);
+    const tagsArr = collectCardTags(c, options);
+    const tagsColStr = tagsArr.length > 0 ? ` ${tagsArr.join(' ')} ` : '';
+    const tagsFieldStr = tagsArr.join(', ');
+
+    const clozeText = buildCardClozeMarkup(c);
+    const { sentenceHtml } = buildFuriganaFieldsForCard(c, options.furiganaFormat);
+    const extraInfo = [c.partOfSpeech, c.frequencyBand].filter(Boolean).join(' · ');
+
+    const fields = [
+      clozeText, // Text
+      extraInfo, // Back Extra
+      c.cloze?.reading || c.reading || '', // Reading
+      c.meaning || '', // Meaning
+      sentenceHtml, // SentenceFuriganaHTML
+      c.level || '', // Level
+      c.sourceDocTitle || '', // Source
+      c.notes || '', // Notes
+      tagsFieldStr, // Tags
+    ];
+
+    const flds = fields.join(ANKI_FIELD_SEPARATOR);
+    const sfld = stripHtmlForSortField(clozeText);
+    const csum = ankiFieldChecksum(clozeText);
+    const modSec = Math.floor((c.updatedAt || nowMs) / 1000);
+
+    notes.push({
+      nid,
+      guid,
+      anchorCardId: c.id,
+      mid: LINGUAFORGE_CLOZE_MODEL_ID,
+      mod: modSec,
+      usn: -1,
+      tags: tagsColStr,
+      flds,
+      fields,
+      sfld,
+      csum,
+    });
+
+    const deckDraft = getDeckDraft(c.deckId);
+    const cid = deterministicAnkiIntId('card', c.id, usedCardIds);
+    ankiCards.push({
+      cid,
+      sourceCardId: c.id,
+      cardType: 'cloze',
+      nid,
+      did: deckDraft.did,
+      ord: 0, // {{c1::...}} maps to card ordinal 0 in Anki Cloze models
+      mod: modSec,
+      usn: -1,
+      type: 0,
+      queue: 0,
+      due: dueOrdinal++,
+      ivl: 0,
+      factor: 0,
+      reps: 0,
+      lapses: 0,
+      left: 0,
+      odue: 0,
+      odid: 0,
+      flags: 0,
+      data: '{}',
+    });
+  }
+
+  // Add Listening notes & cards under LinguaForge Listening model using Anki {{tts}}
+  for (const c of listeningCards) {
+    const nid = deterministicAnkiIntId('note', c.id, usedNoteIds);
+    const guid = deterministicNoteGuid(c.id);
+    const tagsArr = collectCardTags(c, options);
+    const tagsColStr = tagsArr.length > 0 ? ` ${tagsArr.join(' ')} ` : '';
+    const tagsFieldStr = tagsArr.join(', ');
+
+    const { htmlWord, sentenceHtml } = buildFuriganaFieldsForCard(c, options.furiganaFormat);
+    const plainSentence = (c.sentence || '').trim();
+    const useSentenceAudio = c.listeningTarget === 'sentence' && plainSentence.length > 0;
+    const audioText = useSentenceAudio ? plainSentence : c.word || '';
+    const audioTargetLabel = useSentenceAudio ? 'Sentence audio' : 'Word audio';
+
+    const fields = [
+      audioText, // AudioText
+      c.word || '', // Word
+      htmlWord, // FuriganaHTML
+      c.reading || '', // Reading
+      c.meaning || '', // Meaning
+      plainSentence, // Sentence
+      sentenceHtml, // SentenceFuriganaHTML
+      audioTargetLabel, // AudioTargetLabel
+      c.level || '', // Level
+      c.sourceDocTitle || '', // Source
+      c.notes || '', // Notes
+      tagsFieldStr, // Tags
+    ];
+
+    const flds = fields.join(ANKI_FIELD_SEPARATOR);
+    const sfld = stripHtmlForSortField(audioText);
+    const csum = ankiFieldChecksum(audioText);
+    const modSec = Math.floor((c.updatedAt || nowMs) / 1000);
+
+    notes.push({
+      nid,
+      guid,
+      anchorCardId: c.id,
+      mid: LINGUAFORGE_LISTENING_MODEL_ID,
+      mod: modSec,
+      usn: -1,
+      tags: tagsColStr,
+      flds,
+      fields,
+      sfld,
+      csum,
+    });
+
+    const deckDraft = getDeckDraft(c.deckId);
+    const cid = deterministicAnkiIntId('card', c.id, usedCardIds);
+    ankiCards.push({
+      cid,
+      sourceCardId: c.id,
+      cardType: 'listening',
+      nid,
+      did: deckDraft.did,
+      ord: 0,
+      mod: modSec,
+      usn: -1,
+      type: 0,
+      queue: 0,
+      due: dueOrdinal++,
+      ivl: 0,
+      factor: 0,
+      reps: 0,
+      lapses: 0,
+      left: 0,
+      odue: 0,
+      odid: 0,
+      flags: 0,
+      data: '{}',
+    });
+  }
+
+  const hasVocabCards = vocabCards.length > 0;
+  const hasClozeCards = clozeCards.length > 0;
+  const hasListeningCards = listeningCards.length > 0;
+
+  const primaryModelId = hasVocabCards
+    ? LINGUAFORGE_VOCAB_MODEL_ID
+    : hasClozeCards
+    ? LINGUAFORGE_CLOZE_MODEL_ID
+    : hasListeningCards
+    ? LINGUAFORGE_LISTENING_MODEL_ID
+    : LINGUAFORGE_VOCAB_MODEL_ID;
+  const primaryModelName =
+    primaryModelId === LINGUAFORGE_CLOZE_MODEL_ID
+      ? 'LinguaForge Cloze'
+      : primaryModelId === LINGUAFORGE_LISTENING_MODEL_ID
+      ? 'LinguaForge Listening'
+      : 'LinguaForge Vocabulary';
+
   return {
-    modelId: LINGUAFORGE_VOCAB_MODEL_ID,
-    modelName: 'LinguaForge Vocabulary',
+    modelId: primaryModelId,
+    modelName: primaryModelName,
+    clozeModelId: hasClozeCards ? LINGUAFORGE_CLOZE_MODEL_ID : undefined,
+    listeningModelId: hasListeningCards ? LINGUAFORGE_LISTENING_MODEL_ID : undefined,
+    hasVocabCards,
+    hasClozeCards,
+    hasListeningCards,
+    ttsLangCode: options.ttsLangCode || 'ja-JP',
     presentCardTypes,
     fieldNames: [...ANKI_VOCAB_FIELD_NAMES],
     decks: Array.from(deckDrafts.values()),
@@ -1180,33 +1501,42 @@ export function buildAnkiExportPlan(
 // ---------------------------------------------------------------------------
 
 function buildAnkiModelsJson(plan: AnkiExportPlan): string {
-  const flds = plan.fieldNames.map((name, ord) => ({
-    name,
-    ord,
-    sticky: false,
-    rtl: false,
-    font: 'Arial',
-    size: 20,
-    media: [],
-  }));
+  const modelsObj: Record<string, any> = {};
+  const includeVocab = plan.hasVocabCards !== false;
+  const includeCloze = Boolean(plan.hasClozeCards);
+  const includeListening = Boolean(plan.hasListeningCards);
 
-  const tmpls = plan.presentCardTypes.map((ct, ord) => {
-    const def = CARD_TYPE_TEMPLATE_DEFINITIONS[ct];
-    return {
-      name: def.name,
+  if (includeVocab) {
+    const vocabCardTypes = plan.presentCardTypes.filter(
+      (ct): ct is Exclude<CardType, 'cloze' | 'listening'> =>
+        ct !== 'cloze' && ct !== 'listening'
+    );
+    const flds = plan.fieldNames.map((name, ord) => ({
+      name,
       ord,
-      qfmt: def.qfmt,
-      afmt: def.afmt,
-      bqfmt: '',
-      bafmt: '',
-      did: null,
-    };
-  });
+      sticky: false,
+      rtl: false,
+      font: 'Arial',
+      size: 20,
+      media: [],
+    }));
 
-  const modelObj = {
-    [String(plan.modelId)]: {
-      id: plan.modelId,
-      name: plan.modelName,
+    const tmpls = vocabCardTypes.map((ct, ord) => {
+      const def = CARD_TYPE_TEMPLATE_DEFINITIONS[ct];
+      return {
+        name: def.name,
+        ord,
+        qfmt: def.qfmt,
+        afmt: def.afmt,
+        bqfmt: '',
+        bafmt: '',
+        did: null,
+      };
+    });
+
+    modelsObj[String(LINGUAFORGE_VOCAB_MODEL_ID)] = {
+      id: LINGUAFORGE_VOCAB_MODEL_ID,
+      name: 'LinguaForge Vocabulary',
       type: 0,
       mod: plan.createdAtSec,
       usn: -1,
@@ -1219,13 +1549,98 @@ function buildAnkiModelsJson(plan: AnkiExportPlan): string {
         '\\documentclass[12pt]{article}\n\\special{papersize=3in,5in}\n\\usepackage[utf8]{inputenc}\n\\usepackage{amssymb,amsmath}\n\\pagestyle{empty}\n\\setlength{\\parindent}{0in}\n\\begin{document}\n',
       latexPost: '\\end{document}',
       latexsvg: false,
-      req: plan.presentCardTypes.map((_, ord) => [ord, 'any', [0]]),
+      req: vocabCardTypes.map((_, ord) => [ord, 'any', [0]]),
       tags: [],
       vers: [],
-    },
-  };
+    };
+  }
 
-  return JSON.stringify(modelObj);
+  if (includeCloze) {
+    const clozeFlds = ANKI_CLOZE_FIELD_NAMES.map((name, ord) => ({
+      name,
+      ord,
+      sticky: false,
+      rtl: false,
+      font: 'Arial',
+      size: 20,
+      media: [],
+    }));
+
+    modelsObj[String(LINGUAFORGE_CLOZE_MODEL_ID)] = {
+      id: LINGUAFORGE_CLOZE_MODEL_ID,
+      name: 'LinguaForge Cloze',
+      type: 1, // Anki built-in Cloze model type
+      mod: plan.createdAtSec,
+      usn: -1,
+      sortf: 0,
+      did: plan.decks[0]?.did ?? 1,
+      tmpls: [
+        {
+          name: ANKI_CLOZE_TEMPLATE.name,
+          ord: 0,
+          qfmt: ANKI_CLOZE_TEMPLATE.qfmt,
+          afmt: ANKI_CLOZE_TEMPLATE.afmt,
+          bqfmt: '',
+          bafmt: '',
+          did: null,
+        },
+      ],
+      flds: clozeFlds,
+      css: ANKI_MODEL_CSS,
+      latexPre:
+        '\\documentclass[12pt]{article}\n\\special{papersize=3in,5in}\n\\usepackage[utf8]{inputenc}\n\\usepackage{amssymb,amsmath}\n\\pagestyle{empty}\n\\setlength{\\parindent}{0in}\n\\begin{document}\n',
+      latexPost: '\\end{document}',
+      latexsvg: false,
+      req: [[0, 'any', [0]]],
+      tags: [],
+      vers: [],
+    };
+  }
+
+  if (includeListening) {
+    const listeningFlds = ANKI_LISTENING_FIELD_NAMES.map((name, ord) => ({
+      name,
+      ord,
+      sticky: false,
+      rtl: false,
+      font: 'Arial',
+      size: 20,
+      media: [],
+    }));
+    const tmpl = buildAnkiListeningTemplate(plan.ttsLangCode);
+
+    modelsObj[String(LINGUAFORGE_LISTENING_MODEL_ID)] = {
+      id: LINGUAFORGE_LISTENING_MODEL_ID,
+      name: 'LinguaForge Listening',
+      type: 0,
+      mod: plan.createdAtSec,
+      usn: -1,
+      sortf: 0,
+      did: plan.decks[0]?.did ?? 1,
+      tmpls: [
+        {
+          name: tmpl.name,
+          ord: 0,
+          qfmt: tmpl.qfmt,
+          afmt: tmpl.afmt,
+          bqfmt: '',
+          bafmt: '',
+          did: null,
+        },
+      ],
+      flds: listeningFlds,
+      css: ANKI_MODEL_CSS,
+      latexPre:
+        '\\documentclass[12pt]{article}\n\\special{papersize=3in,5in}\n\\usepackage[utf8]{inputenc}\n\\usepackage{amssymb,amsmath}\n\\pagestyle{empty}\n\\setlength{\\parindent}{0in}\n\\begin{document}\n',
+      latexPost: '\\end{document}',
+      latexsvg: false,
+      req: [[0, 'any', [0]]],
+      tags: [],
+      vers: [],
+    };
+  }
+
+  return JSON.stringify(modelsObj);
 }
 
 function buildAnkiDecksJson(plan: AnkiExportPlan): string {
@@ -1712,7 +2127,11 @@ export async function verifyAnkiApkgPackage(
         };
       }
 
-      if (!modelsObj[String(LINGUAFORGE_VOCAB_MODEL_ID)]) {
+      if (
+        !modelsObj[String(LINGUAFORGE_VOCAB_MODEL_ID)] &&
+        !modelsObj[String(LINGUAFORGE_CLOZE_MODEL_ID)] &&
+        !modelsObj[String(LINGUAFORGE_LISTENING_MODEL_ID)]
+      ) {
         return {
           ok: false,
           schemaVersion,
@@ -1721,7 +2140,7 @@ export async function verifyAnkiApkgPackage(
           revlogCount: 0,
           deckCount: Object.keys(decksObj).length,
           zipEntries: entries,
-          error: 'LinguaForge Vocabulary model missing in col.models.',
+          error: 'LinguaForge note type model missing in col.models.',
         };
       }
 
@@ -1775,20 +2194,27 @@ export async function verifyAnkiApkgPackage(
       }
 
       const firstRes = checkDb.exec(
-        'SELECT id, guid, flds, csum FROM notes ORDER BY rowid ASC LIMIT 1;'
+        'SELECT id, guid, flds, csum, mid FROM notes ORDER BY rowid ASC LIMIT 1;'
       );
       const lastRes = checkDb.exec(
-        'SELECT id, guid, flds, csum FROM notes ORDER BY rowid DESC LIMIT 1;'
+        'SELECT id, guid, flds, csum, mid FROM notes ORDER BY rowid DESC LIMIT 1;'
       );
 
       const decodeNoteSummary = (row: any[] | undefined) => {
         if (!row) return undefined;
         const fields = String(row[2] || '').split(ANKI_FIELD_SEPARATOR);
+        const mid = Number(row[4]);
+        const isCloze = mid === LINGUAFORGE_CLOZE_MODEL_ID;
+        const isListening = mid === LINGUAFORGE_LISTENING_MODEL_ID;
         return {
           id: Number(row[0]),
           guid: String(row[1]),
-          word: fields[0] || '',
-          meaning: fields[5] || '',
+          word: isListening ? fields[1] || fields[0] || '' : fields[0] || '',
+          meaning: isCloze
+            ? fields[3] || ''
+            : isListening
+            ? fields[4] || ''
+            : fields[5] || '',
           csum: Number(row[3]),
         };
       };
@@ -1932,6 +2358,9 @@ export function buildCsvTsvExport(
           break;
         case 'cardType':
           val = card.cardType;
+          break;
+        case 'clozeText':
+          val = card.cardType === 'cloze' ? buildCardClozeMarkup(card) : '';
           break;
         case 'tags':
           val = tags;

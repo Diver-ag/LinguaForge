@@ -233,11 +233,15 @@ export const ApkgImportSection: React.FC<ApkgImportSectionProps> = ({
     await persistModelMappings(nextAll, summary);
   };
 
-  const allActiveNoteTypesHaveWord = Boolean(
+  const allActiveNoteTypesReady = Boolean(
     summary &&
-      summary.noteTypes.every(
-        (nt) => nt.noteCount === 0 || (modelMappings[nt.id] || []).includes('word')
-      )
+      summary.noteTypes.every((nt) => {
+        if (nt.noteCount === 0) return true;
+        const mapped = modelMappings[nt.id] || [];
+        return nt.isClozeModel
+          ? mapped.includes('sentence') || mapped.includes('word')
+          : mapped.includes('word');
+      })
   );
 
   const handleCancelImport = () => {
@@ -256,8 +260,10 @@ export const ApkgImportSection: React.FC<ApkgImportSectionProps> = ({
     setImportError(null);
     setImportResult(null);
 
-    if (!allActiveNoteTypesHaveWord) {
-      setImportError('Every note type must have at least one field mapped to "Word".');
+    if (!allActiveNoteTypesReady) {
+      setImportError(
+        'Every note type must have "Word" mapped (or "Sentence" for Cloze note types).'
+      );
       return;
     }
 
@@ -275,6 +281,13 @@ export const ApkgImportSection: React.FC<ApkgImportSectionProps> = ({
     const jobId = `import-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     activeJobIdRef.current = jobId;
 
+    const modelIsClozeMap = new Map(
+      summary.noteTypes.map((nt) => [nt.id, Boolean(nt.isClozeModel)])
+    );
+    const modelFieldNamesMap = new Map(
+      summary.noteTypes.map((nt) => [nt.id, nt.fieldNames])
+    );
+
     let sessionCtx: ApkgWriteSessionContext;
     try {
       sessionCtx = await createApkgWriteSession(
@@ -288,7 +301,9 @@ export const ApkgImportSection: React.FC<ApkgImportSectionProps> = ({
           duplicateMode,
           importAsNewOnly,
         },
-        new Map(Object.entries(modelNames))
+        new Map(Object.entries(modelNames)),
+        modelIsClozeMap,
+        modelFieldNamesMap
       );
     } catch (err: any) {
       setIsImporting(false);
@@ -298,8 +313,11 @@ export const ApkgImportSection: React.FC<ApkgImportSectionProps> = ({
 
     let notesRead = 0;
     let cardsCreated = 0;
+    let clozeCardsCreated = 0;
+    let unsupportedClozeCount = 0;
     let cardsUpdated = 0;
     let skippedDuplicates = 0;
+    const clozeNotices: string[] = [];
     const failedNotes: ApkgFailedNote[] = [];
 
     // Sequential write queue so streamed batches commit in strict order
@@ -321,8 +339,13 @@ export const ApkgImportSection: React.FC<ApkgImportSectionProps> = ({
               const stats = await processApkgNoteBatch(batch, sessionCtx);
               notesRead += batch.length;
               cardsCreated += stats.created;
+              clozeCardsCreated += stats.clozeCreated;
+              unsupportedClozeCount += stats.unsupportedClozeCount;
               cardsUpdated += stats.updated;
               skippedDuplicates += stats.skippedDuplicates;
+              if (stats.clozeWarnings.length > 0 && clozeNotices.length < 50) {
+                clozeNotices.push(...stats.clozeWarnings.slice(0, 50 - clozeNotices.length));
+              }
               if (stats.failed.length > 0) {
                 failedNotes.push(...stats.failed);
               }
@@ -370,6 +393,9 @@ export const ApkgImportSection: React.FC<ApkgImportSectionProps> = ({
       const finalResult: ApkgImportResult = {
         notesRead,
         cardsCreated,
+        clozeCardsCreated,
+        unsupportedClozeCount,
+        clozeNotices,
         cardsUpdated,
         skippedDuplicates,
         skippedMediaCount: summary.skippedMediaCount,
@@ -577,7 +603,8 @@ export const ApkgImportSection: React.FC<ApkgImportSectionProps> = ({
                 {summary.noteTypes.map((nt) => (
                   <div key={nt.id} className="flex items-center justify-between gap-2">
                     <span className="truncate text-[var(--text)]">
-                      {nt.name} ({nt.fieldNames.length} fields)
+                      {nt.name} ({nt.fieldNames.length} fields
+                      {nt.isClozeModel ? ' · Cloze' : ''})
                     </span>
                     <span className="text-[var(--text-muted)] tabular-nums shrink-0">
                       {nt.noteCount.toLocaleString()} notes
@@ -648,10 +675,13 @@ export const ApkgImportSection: React.FC<ApkgImportSectionProps> = ({
             </p>
           </div>
 
-          {!allActiveNoteTypesHaveWord && (
+          {!allActiveNoteTypesReady && (
             <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-300/70 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-200 flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>Map at least one field to <strong>Word</strong> for every note type.</span>
+              <span>
+                Map at least one field to <strong>Word</strong> for standard note types (or{' '}
+                <strong>Sentence</strong> for Cloze note types).
+              </span>
             </div>
           )}
 
@@ -664,7 +694,14 @@ export const ApkgImportSection: React.FC<ApkgImportSectionProps> = ({
                   className="p-4 rounded-2xl bg-[var(--surface-muted)]/50 border border-[var(--border)] space-y-3"
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <span className="font-bold text-[var(--text)]">{nt.name}</span>
+                    <span className="font-bold text-[var(--text)]">
+                      {nt.name}
+                      {nt.isClozeModel && (
+                        <span className="ml-2 text-[11px] font-semibold text-[var(--accent-text)]">
+                          (Cloze · auto-converts {'{{c1::…}}'} deletions)
+                        </span>
+                      )}
+                    </span>
                     <span className="text-[var(--text-muted)] tabular-nums">
                       {nt.noteCount.toLocaleString()} notes · {nt.fieldNames.length} fields
                     </span>
@@ -912,7 +949,7 @@ export const ApkgImportSection: React.FC<ApkgImportSectionProps> = ({
               <button
                 type="button"
                 onClick={handleStartImport}
-                disabled={!allActiveNoteTypesHaveWord}
+                disabled={!allActiveNoteTypesReady}
                 className="min-h-[44px] px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-xs font-bold inline-flex items-center gap-2 shadow-sm transition active:scale-95"
               >
                 <Upload className="w-4 h-4" />
@@ -999,6 +1036,11 @@ export const ApkgImportSection: React.FC<ApkgImportSectionProps> = ({
               <div className="text-lg font-black text-emerald-600 dark:text-emerald-400 mt-0.5">
                 {importResult.cardsCreated.toLocaleString()}
               </div>
+              {(importResult.clozeCardsCreated ?? 0) > 0 && (
+                <div className="text-[11px] text-[var(--text-muted)] mt-0.5">
+                  {importResult.clozeCardsCreated?.toLocaleString()} cloze
+                </div>
+              )}
             </div>
             <div className="p-3.5 rounded-2xl bg-[var(--surface-muted)] border border-[var(--border)]">
               <div className="text-[11px] text-[var(--text-muted)]">Cards updated</div>
@@ -1031,6 +1073,31 @@ export const ApkgImportSection: React.FC<ApkgImportSectionProps> = ({
               </div>
             </div>
           </div>
+
+          {((importResult.unsupportedClozeCount ?? 0) > 0 ||
+            (importResult.clozeNotices && importResult.clozeNotices.length > 0)) && (
+            <div className="p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-300/70 dark:border-amber-800 space-y-1.5 text-xs text-amber-900 dark:text-amber-200">
+              <div className="font-bold flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>Cloze import notices</span>
+              </div>
+              {(importResult.unsupportedClozeCount ?? 0) > 0 && (
+                <div>
+                  Skipped <strong>{importResult.unsupportedClozeCount}</strong> note(s) with unsupported cloze constructs (nested cloze tags or empty blanks — see Errors below).
+                </div>
+              )}
+              {importResult.clozeNotices && importResult.clozeNotices.length > 0 && (
+                <ul className="list-disc pl-5 space-y-0.5 text-[11px] opacity-90">
+                  {importResult.clozeNotices.slice(0, 8).map((msg, idx) => (
+                    <li key={idx}>{msg}</li>
+                  ))}
+                  {importResult.clozeNotices.length > 8 && (
+                    <li>…and {importResult.clozeNotices.length - 8} more multi-cloze note(s)</li>
+                  )}
+                </ul>
+              )}
+            </div>
+          )}
 
           {importResult.failedNotes.length > 0 && (
             <div className="space-y-3 pt-2 border-t border-[var(--border)]">

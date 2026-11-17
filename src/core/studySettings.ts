@@ -1,6 +1,8 @@
 import { db, type DeckItem } from '../db/db';
 import { logEvent } from './eventLogger';
 import { invalidateStatsCache } from './statsCache';
+import type { ClozeHintMode } from './cloze';
+export type { ClozeHintMode };
 
 export type NewCardOrder = 'added' | 'random';
 export type NewCardMix = 'first' | 'mixed' | 'after';
@@ -24,6 +26,10 @@ export interface StudySettings {
   dailyGoalReviews: number; // default 30 reviews/day
   streakMinReviews: number; // default 1 review/day to count toward streak
   streakFreezeEnabled: boolean; // optional 1 free skipped day/week (default false)
+  clozeHintMode: ClozeHintMode; // hint shown under blank on cloze cards (default 'meaning')
+  speechVoiceByLang: Record<string, string>; // remembered TTS voiceURI/name per language pack ID or ttsCode
+  speechRate: number; // default speech playback rate (0.5 - 1.5, default 0.9)
+  listeningAutoPlay: boolean; // auto-play audio when a listening card is shown (default true)
 }
 
 export const DEFAULT_STUDY_SETTINGS: StudySettings = {
@@ -39,6 +45,10 @@ export const DEFAULT_STUDY_SETTINGS: StudySettings = {
   dailyGoalReviews: 30,
   streakMinReviews: 1,
   streakFreezeEnabled: false,
+  clozeHintMode: 'meaning',
+  speechVoiceByLang: {},
+  speechRate: 0.9,
+  listeningAutoPlay: true,
 };
 
 export const STUDY_SETTINGS_KEY = 'studySettings';
@@ -62,6 +72,15 @@ export function normalizeStudySettings(raw?: Partial<StudySettings> | null): Stu
     return Math.min(max, Math.max(min, n));
   };
 
+  const cleanVoiceMap: Record<string, string> = {};
+  if (s.speechVoiceByLang && typeof s.speechVoiceByLang === 'object') {
+    for (const [k, v] of Object.entries(s.speechVoiceByLang)) {
+      if (typeof k === 'string' && typeof v === 'string' && k.trim() && v.trim()) {
+        cleanVoiceMap[k.trim()] = v.trim();
+      }
+    }
+  }
+
   return {
     newCardsPerDay: Math.round(clampNum(s.newCardsPerDay, DEFAULT_STUDY_SETTINGS.newCardsPerDay, 0, 9999)),
     maxReviewsPerDay: Math.round(clampNum(s.maxReviewsPerDay, DEFAULT_STUDY_SETTINGS.maxReviewsPerDay, 0, 99999)),
@@ -78,6 +97,18 @@ export function normalizeStudySettings(raw?: Partial<StudySettings> | null): Stu
       s.streakFreezeEnabled !== undefined
         ? Boolean(s.streakFreezeEnabled)
         : DEFAULT_STUDY_SETTINGS.streakFreezeEnabled,
+    clozeHintMode:
+      s.clozeHintMode === 'reading' ||
+      s.clozeHintMode === 'both' ||
+      s.clozeHintMode === 'none'
+        ? s.clozeHintMode
+        : 'meaning',
+    speechVoiceByLang: cleanVoiceMap,
+    speechRate: Number(clampNum(s.speechRate, DEFAULT_STUDY_SETTINGS.speechRate, 0.5, 1.5).toFixed(2)),
+    listeningAutoPlay:
+      s.listeningAutoPlay !== undefined
+        ? Boolean(s.listeningAutoPlay)
+        : DEFAULT_STUDY_SETTINGS.listeningAutoPlay,
   };
 }
 

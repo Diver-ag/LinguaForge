@@ -1,4 +1,4 @@
-import { db, type CardItem, type DeckItem, type ReviewLogItem } from '../db/db';
+import { db, type CardItem, type CardType, type DeckItem, type ReviewLogItem } from '../db/db';
 import { Rating, State } from './fsrsScheduler';
 import {
   DEMO_SYNTHETIC_META_KEY,
@@ -18,6 +18,7 @@ export type StatsPeriod = '7d' | '30d' | '90d' | '1y' | 'all';
 export interface StatsQueryOptions {
   languageId: string; // 'all' or pack id ('ja', 'es')
   deckId: string; // 'all' or specific deck id
+  cardType?: 'all' | CardType; // 'all' or specific card type
   period: StatsPeriod;
   includeDemoData: boolean;
   studySettings: StudySettings;
@@ -66,6 +67,18 @@ export interface MaturityCounts {
   matureCount: number;
   suspendedCount: number;
   totalCards: number;
+}
+
+export interface CardTypeBreakdownRow {
+  cardType: CardType;
+  label: string;
+  totalCards: number;
+  newCount: number;
+  learningCount: number;
+  youngCount: number;
+  matureCount: number;
+  reviews: number;
+  retentionPct: number | null;
 }
 
 export interface IntervalBucket {
@@ -172,6 +185,7 @@ export interface DashboardStats {
     totalScheduled: number;
   };
   maturity: MaturityCounts;
+  cardTypeBreakdown: CardTypeBreakdownRow[];
   intervalHistogram: IntervalBucket[];
   wordsLearned: {
     series: WordsLearnedPoint[];
@@ -293,7 +307,8 @@ export async function computeDashboardStats(
   const nowMs = opts.nowMs ?? Date.now();
   const s = opts.studySettings;
   const cacheVersion = getStatsCacheVersion();
-  const cacheKey = `${opts.languageId}|${opts.deckId}|${opts.period}|${opts.includeDemoData}|${s.dayResetHour}|${s.desiredRetention}|${s.dailyGoalReviews}|${s.streakMinReviews}|${s.streakFreezeEnabled}|${s.leechThreshold}|${cacheVersion}`;
+  const cardTypeFilter: 'all' | CardType = opts.cardType || 'all';
+  const cacheKey = `${opts.languageId}|${opts.deckId}|${cardTypeFilter}|${opts.period}|${opts.includeDemoData}|${s.dayResetHour}|${s.desiredRetention}|${s.dailyGoalReviews}|${s.streakMinReviews}|${s.streakFreezeEnabled}|${s.leechThreshold}|${cacheVersion}`;
 
   if (opts.nowMs === undefined) {
     const cached = statsCache.get(cacheKey);
@@ -308,7 +323,7 @@ export async function computeDashboardStats(
     periodDays !== null ? shiftLocalDateKey(todayKey, -(periodDays - 1)) : null;
 
   // 1. Load metadata, cards, decks, logs, wordStatuses, lookups
-  const [decks, realCards, logs, wordStatusesRaw, lookupsRaw, lookupEventsRaw, demoMetaItem] =
+  const [decks, realCards, rawLogs, wordStatusesRaw, lookupsRaw, lookupEventsRaw, demoMetaItem] =
     await Promise.all([
       opts.languageId === 'all'
         ? db.decks.toArray()
@@ -339,12 +354,27 @@ export async function computeDashboardStats(
     (opts.languageId === 'all' || demoMeta!.languageId === opts.languageId) &&
     (opts.deckId === 'all' || demoMeta!.deckId === opts.deckId);
 
-  const cards: (CardItem & { __isDemo?: boolean })[] = [
+  const allScopeCards: (CardItem & { __isDemo?: boolean })[] = [
     ...realCards,
     ...(demoMatchesFilter
       ? demoMeta!.cards.map((c) => ({ ...c, __isDemo: true }))
       : []),
   ];
+
+  const cardById = new Map<string, CardItem>();
+  for (const c of allScopeCards) {
+    cardById.set(c.id, c);
+  }
+
+  const cards =
+    cardTypeFilter === 'all'
+      ? allScopeCards
+      : allScopeCards.filter((c) => c.cardType === cardTypeFilter);
+
+  const logs =
+    cardTypeFilter === 'all'
+      ? rawLogs
+      : rawLogs.filter((l) => cardById.get(l.cardId)?.cardType === cardTypeFilter);
 
   // Single pass aggregation over reviewLogs
   const dayCounts = new Map<string, number>();
@@ -1032,6 +1062,80 @@ export async function computeDashboardStats(
       totalScheduled: totalScheduledForecast,
     },
     maturity,
+    cardTypeBreakdown: (() => {
+      const typeOrder: { type: CardType; label: string }[] = [
+        { type: 'word_to_meaning', label: 'Word → Meaning' },
+        { type: 'meaning_to_word', label: 'Meaning → Word' },
+        { type: 'reading', label: 'Reading' },
+        { type: 'cloze', label: 'Cloze' },
+        { type: 'listening', label: 'Listening' },
+      ];
+      const map = new Map<
+        CardType,
+        {
+          totalCards: number;
+          newCount: number;
+          learningCount: number;
+          youngCount: number;
+          matureCount: number;
+          reviews: number;
+          retTotal: number;
+          retPass: number;
+        }
+      >();
+      for (const t of typeOrder) {
+        map.set(t.type, {
+          totalCards: 0,
+          newCount: 0,
+          learningCount: 0,
+          youngCount: 0,
+          matureCount: 0,
+          reviews: 0,
+          retTotal: 0,
+          retPass: 0,
+        });
+      }
+      for (const c of cards) {
+        const b = map.get(c.cardType);
+        if (!b) continue;
+        b.totalCards += 1;
+        if (!c.suspended) {
+          const st = c.state ?? State.New;
+          if (st === State.New) b.newCount += 1;
+          else if (st === State.Learning || st === State.Relearning) b.learningCount += 1;
+          else if ((c.scheduledDays ?? 0) >= 21) b.matureCount += 1;
+          else b.youngCount += 1;
+        }
+      }
+      for (const log of logs) {
+        const dKey = getDayKey(log.reviewedAt);
+        if (periodStartKey !== null && (dKey < periodStartKey || dKey > todayKey)) continue;
+        const c = cardById.get(log.cardId);
+        if (!c) continue;
+        const b = map.get(c.cardType);
+        if (!b) continue;
+        b.reviews += 1;
+        if (log.previousState === State.Review) {
+          b.retTotal += 1;
+          if (log.rating >= Rating.Hard) b.retPass += 1;
+        }
+      }
+      return typeOrder.map(({ type, label }) => {
+        const b = map.get(type)!;
+        return {
+          cardType: type,
+          label,
+          totalCards: b.totalCards,
+          newCount: b.newCount,
+          learningCount: b.learningCount,
+          youngCount: b.youngCount,
+          matureCount: b.matureCount,
+          reviews: b.reviews,
+          retentionPct:
+            b.retTotal > 0 ? Number(((b.retPass / b.retTotal) * 100).toFixed(1)) : null,
+        };
+      });
+    })(),
     intervalHistogram: intervalBuckets.map(({ label, count }) => ({ label, count })),
     wordsLearned: {
       series: wordsLearnedSeries,

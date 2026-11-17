@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { DictionaryEntry, LanguagePack, Token, KanjiDetail } from '../../core/languagePack';
-import { type CardType, type WordStatusType } from '../../db/db';
+import { type CardType, type ClozeData, type WordStatusType } from '../../db/db';
 import {
   addCardsForWord,
   findDuplicateCard,
+  findDuplicateClozeCard,
   getDecksWithCounts,
   getDefaultDeckId,
   type DeckWithCount,
@@ -24,6 +25,8 @@ import {
 import { FuriganaText } from '../../ui/FuriganaText';
 import { deriveFrequencyInfo } from '../../packs/japanese/jmdictFrequency';
 import { getKanjiDetailsForWord, getHardestKanjiLevel, hasInstalledKanjiData } from '../../packs/japanese/kanjiLookup';
+import { isSpeechSynthesisSupported, speakWithReliability } from '../../core/speech';
+import { getStudySettings } from '../../core/studySettings';
 
 // Maps JMdict / UniDic / MeCab POS abbreviations to user-friendly names
 const POS_EXPANSION_MAP: Record<string, string> = {
@@ -97,6 +100,7 @@ interface WordPopupProps {
   entry: DictionaryEntry | null;
   pack: LanguagePack;
   surroundingSentence?: string;
+  tokenSentenceRange?: { start: number; end: number; surface: string } | null;
   documentId?: number;
   documentTitle?: string;
   isPinned?: boolean;
@@ -111,6 +115,7 @@ export const WordPopup: React.FC<WordPopupProps> = ({
   entry,
   pack,
   surroundingSentence,
+  tokenSentenceRange,
   documentId,
   documentTitle,
   isPinned,
@@ -254,12 +259,30 @@ export const WordPopup: React.FC<WordPopupProps> = ({
     };
   }, [pack.id]);
 
-  // Check for existing duplicate cards for (lemma, reading, cardType)
+  const hasContextSentence = Boolean(surroundingSentence && surroundingSentence.trim().length > 0);
+  const canCreateCloze = Boolean(
+    hasContextSentence &&
+      tokenSentenceRange &&
+      tokenSentenceRange.end > tokenSentenceRange.start
+  );
+
+  // Automatically deselect 'cloze' if token switches to one without a context sentence
+  useEffect(() => {
+    if (!canCreateCloze) {
+      setSelectedCardTypes((prev) => (prev.includes('cloze') ? prev.filter((t) => t !== 'cloze') : prev));
+    }
+  }, [canCreateCloze]);
+
+  const ttsSupported = isSpeechSynthesisSupported();
+
+  // Check for existing duplicate cards for (lemma, reading, cardType) and cloze (lemma, sentence, offsets)
   useEffect(() => {
     let cancelled = false;
     setAddedFeedback(null);
     const checkDuplicates = async () => {
-      const types: CardType[] = ['word_to_meaning', 'meaning_to_word', 'reading'];
+      const types: CardType[] = ttsSupported
+        ? ['word_to_meaning', 'meaning_to_word', 'reading', 'listening']
+        : ['word_to_meaning', 'meaning_to_word', 'reading'];
       const found = new Set<CardType>();
       await Promise.all(
         types.map(async (t) => {
@@ -272,6 +295,18 @@ export const WordPopup: React.FC<WordPopupProps> = ({
           if (match) found.add(t);
         })
       );
+
+      if (canCreateCloze && surroundingSentence && tokenSentenceRange) {
+        const clozeMatch = await findDuplicateClozeCard({
+          languageId: pack.id,
+          lemma: lemma.trim(),
+          sentence: surroundingSentence.trim(),
+          start: tokenSentenceRange.start,
+          end: tokenSentenceRange.end,
+        });
+        if (clozeMatch) found.add('cloze');
+      }
+
       if (!cancelled) {
         setExistingCardTypes(found);
       }
@@ -280,9 +315,11 @@ export const WordPopup: React.FC<WordPopupProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [pack.id, lemma, validReadingPrimary]);
+  }, [pack.id, lemma, validReadingPrimary, canCreateCloze, surroundingSentence, tokenSentenceRange, ttsSupported]);
 
   const toggleCardType = (type: CardType) => {
+    if (type === 'cloze' && !canCreateCloze) return;
+    if (type === 'listening' && !ttsSupported) return;
     setAddedFeedback(null);
     setSelectedCardTypes((prev) =>
       prev.includes(type) ? prev.filter((t) => t !== type) : [...prev, type]
@@ -292,17 +329,21 @@ export const WordPopup: React.FC<WordPopupProps> = ({
   const allSelectedAreDuplicates =
     selectedCardTypes.length > 0 && selectedCardTypes.every((t) => existingCardTypes.has(t));
 
-  const handleSpeak = (textToSpeak: string) => {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(textToSpeak);
-      utterance.lang = pack.ttsCode || 'ja-JP';
-      utterance.rate = 0.85;
-      setIsSpeaking(true);
-      utterance.onend = () => setIsSpeaking(false);
-      utterance.onerror = () => setIsSpeaking(false);
-      window.speechSynthesis.speak(utterance);
-    }
+  const handleSpeak = async (textToSpeak: string) => {
+    if (!ttsSupported) return;
+    const settings = await getStudySettings();
+    const ttsCode = pack.ttsCode || 'ja-JP';
+    const preferredVoiceId =
+      settings.speechVoiceByLang[pack.id] || settings.speechVoiceByLang[ttsCode];
+    setIsSpeaking(true);
+    speakWithReliability({
+      text: textToSpeak,
+      ttsCode,
+      preferredVoiceId,
+      rate: settings.speechRate,
+      onEnd: () => setIsSpeaking(false),
+      onError: () => setIsSpeaking(false),
+    });
   };
 
   const handleSetStatus = async (status: WordStatusType) => {
@@ -324,6 +365,20 @@ export const WordPopup: React.FC<WordPopupProps> = ({
         }
       }
 
+      const trimmedSentence = (surroundingSentence || '').trim();
+      let clozePayload: ClozeData | undefined;
+      if (selectedCardTypes.includes('cloze') && canCreateCloze && trimmedSentence && tokenSentenceRange) {
+        clozePayload = {
+          sentence: trimmedSentence,
+          start: tokenSentenceRange.start,
+          end: tokenSentenceRange.end,
+          answer: token.surface,
+          lemma: lemma.trim(),
+          reading: validReadingPrimary,
+          hint: meanings.join('; ') || 'Definition from reader',
+        };
+      }
+
       const { added, duplicateTypes } = await addCardsForWord({
         deckId: selectedDeckId,
         languageId: pack.id,
@@ -336,8 +391,9 @@ export const WordPopup: React.FC<WordPopupProps> = ({
         partOfSpeech: pos,
         level: level || '',
         frequencyBand: effectiveFrequencyBand || '',
-        sentence: surroundingSentence || '',
+        sentence: trimmedSentence,
         sentenceFuriganaSegments: sentenceFurigana,
+        cloze: clozePayload,
         sourceDocTitle: documentTitle || '',
         sourceDocId: documentId,
       });
@@ -937,20 +993,34 @@ export const WordPopup: React.FC<WordPopupProps> = ({
               { id: 'word_to_meaning', label: 'Word → Meaning' },
               { id: 'meaning_to_word', label: 'Meaning → Word' },
               { id: 'reading', label: 'Reading' },
+              { id: 'cloze', label: 'Cloze' },
+              ...(ttsSupported ? [{ id: 'listening' as CardType, label: 'Listening' }] : []),
             ] as { id: CardType; label: string }[]
           ).map((ct) => {
-            const checked = selectedCardTypes.includes(ct.id);
-            const alreadyExists = existingCardTypes.has(ct.id);
+            const isCloze = ct.id === 'cloze';
+            const isDisabled = isCloze && !canCreateCloze;
+            const checked = !isDisabled && selectedCardTypes.includes(ct.id);
+            const alreadyExists = !isDisabled && existingCardTypes.has(ct.id);
             return (
               <label
                 key={ct.id}
-                className="inline-flex items-center gap-1 cursor-pointer select-none text-[11px] text-[var(--text-secondary)]"
+                title={
+                  isDisabled
+                    ? 'Cloze requires a context sentence from the reading text'
+                    : undefined
+                }
+                className={`inline-flex items-center gap-1 select-none text-[11px] ${
+                  isDisabled
+                    ? 'cursor-not-allowed opacity-45 text-[var(--text-muted)]'
+                    : 'cursor-pointer text-[var(--text-secondary)]'
+                }`}
               >
                 <input
                   type="checkbox"
                   checked={checked}
+                  disabled={isDisabled}
                   onChange={() => toggleCardType(ct.id)}
-                  className="rounded border-[var(--border)] text-indigo-600 focus:ring-indigo-500"
+                  className="rounded border-[var(--border)] text-indigo-600 focus:ring-indigo-500 disabled:opacity-50"
                 />
                 <span className={alreadyExists ? 'opacity-65' : ''}>
                   {ct.label}
@@ -960,6 +1030,11 @@ export const WordPopup: React.FC<WordPopupProps> = ({
             );
           })}
         </div>
+        {!ttsSupported && (
+          <p className="text-[10px] text-[var(--text-muted)]">
+            Listening card type hidden: Web Speech API text-to-speech is not supported in this browser.
+          </p>
+        )}
       </div>
 
       {/* Action Footer */}

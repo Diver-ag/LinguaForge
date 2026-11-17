@@ -927,3 +927,100 @@ export const DailyMetricBarChartSvg: React.FC<{
     </div>
   );
 };
+
+// ============================================================================
+// 7. Card Types Breakdown Chart
+// ============================================================================
+
+export const CardTypeBreakdownChart: React.FC<{
+  rows: {
+    cardType: string;
+    label: string;
+    totalCards: number;
+    newCount: number;
+    learningCount: number;
+    youngCount: number;
+    matureCount: number;
+    reviews: number;
+    retentionPct: number | null;
+  }[];
+}> = ({ rows }) => {
+  const maxTotal = Math.max(1, ...rows.map((r) => r.totalCards));
+
+  return (
+    <div className="space-y-3">
+      {rows.map((row) => {
+        const pct = Math.round((row.totalCards / maxTotal) * 100);
+        const activeCount = row.newCount + row.learningCount + row.youngCount + row.matureCount;
+        const matureW = activeCount > 0 ? (row.matureCount / row.totalCards) * 100 : 0;
+        const youngW = activeCount > 0 ? (row.youngCount / row.totalCards) * 100 : 0;
+        const learnW = activeCount > 0 ? (row.learningCount / row.totalCards) * 100 : 0;
+        const newW = Math.max(0, 100 - matureW - youngW - learnW);
+
+        return (
+          <div key={row.cardType} className="space-y-1.5 text-xs tabular-nums">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-bold text-[var(--text)]">{row.label}</span>
+              <span className="text-[11px] text-[var(--text-muted)]">
+                <strong className="text-[var(--text)]">{row.totalCards}</strong>{' '}
+                {row.totalCards === 1 ? 'card' : 'cards'} · {row.reviews} reviews
+                {row.retentionPct !== null ? ` · ${row.retentionPct}% retention` : ''}
+              </span>
+            </div>
+            <div className="h-2.5 w-full rounded-full bg-[var(--surface-muted)] overflow-hidden">
+              {row.totalCards > 0 && (
+                <div
+                  className="h-full flex overflow-hidden rounded-full"
+                  style={{ width: `${Math.max(4, pct)}%` }}
+                >
+                  {matureW > 0 && (
+                    <div
+                      className="h-full bg-emerald-500"
+                      style={{ width: `${matureW}%` }}
+                      title={`Mature: ${row.matureCount}`}
+                    />
+                  )}
+                  {youngW > 0 && (
+                    <div
+                      className="h-full bg-indigo-500"
+                      style={{ width: `${youngW}%` }}
+                      title={`Young: ${row.youngCount}`}
+                    />
+                  )}
+                  {learnW > 0 && (
+                    <div
+                      className="h-full bg-amber-500"
+                      style={{ width: `${learnW}%` }}
+                      title={`Learning: ${row.learningCount}`}
+                    />
+                  )}
+                  {newW > 0 && (
+                    <div
+                      className="h-full bg-sky-500/80"
+                      style={{ width: `${newW}%` }}
+                      title={`New: ${row.newCount}`}
+                    />
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+      <div className="pt-1 flex flex-wrap items-center gap-3 text-[11px] text-[var(--text-muted)]">
+        <span className="inline-flex items-center gap-1">
+          <span className="w-2.5 h-2.5 rounded-xs bg-emerald-500" /> Mature
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="w-2.5 h-2.5 rounded-xs bg-indigo-500" /> Young
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="w-2.5 h-2.5 rounded-xs bg-amber-500" /> Learning
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="w-2.5 h-2.5 rounded-xs bg-sky-500/80" /> New
+        </span>
+      </div>
+    </div>
+  );
+};

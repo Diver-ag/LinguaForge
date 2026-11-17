@@ -145,6 +145,24 @@ export async function restoreFromBackup(jsonData: string): Promise<{ success: bo
             ...c,
             tags: Array.isArray(c.tags) ? c.tags : [],
             notes: c.notes ?? '',
+            cloze:
+              c.cloze && typeof c.cloze === 'object'
+                ? {
+                    sentence: String(c.cloze.sentence ?? c.sentence ?? ''),
+                    start: Number(c.cloze.start ?? 0),
+                    end: Number(c.cloze.end ?? 0),
+                    answer: String(c.cloze.answer ?? c.word ?? ''),
+                    lemma: String(c.cloze.lemma ?? c.lemma ?? c.word ?? ''),
+                    reading: String(c.cloze.reading ?? c.reading ?? ''),
+                    hint: c.cloze.hint !== undefined ? String(c.cloze.hint) : undefined,
+                  }
+                : undefined,
+            listeningTarget:
+              c.cardType === 'listening'
+                ? c.listeningTarget === 'sentence'
+                  ? 'sentence'
+                  : 'word'
+                : undefined,
             suspended: Boolean(c.suspended),
             buried: Boolean(c.buried),
             state: c.state ?? 0,
