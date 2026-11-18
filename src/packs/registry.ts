@@ -33,7 +33,7 @@ const GermanLanguagePack = createMultilingualLanguagePack({
       version: '1.0.0',
       sizeBytes: 4194304,
       sizeFormatted: '4.0 MB',
-      url: 'https://cdn.jsdelivr.net/gh/linguaforge/packs@main/de/dictionary.json.gz',
+      url: 'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/de/dictionary.json.gz',
       isCoreBundle: true,
     },
     {
@@ -43,7 +43,7 @@ const GermanLanguagePack = createMultilingualLanguagePack({
       version: '1.0.0',
       sizeBytes: 1258291,
       sizeFormatted: '1.2 MB',
-      url: 'https://cdn.jsdelivr.net/gh/linguaforge/packs@main/de/frequency.json.gz',
+      url: 'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/de/frequency.json.gz',
     },
   ],
 });
@@ -74,7 +74,7 @@ const FrenchLanguagePack = createMultilingualLanguagePack({
       version: '1.0.0',
       sizeBytes: 3984588,
       sizeFormatted: '3.8 MB',
-      url: 'https://cdn.jsdelivr.net/gh/linguaforge/packs@main/fr/dictionary.json.gz',
+      url: 'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/fr/dictionary.json.gz',
       isCoreBundle: true,
     },
     {
@@ -84,7 +84,7 @@ const FrenchLanguagePack = createMultilingualLanguagePack({
       version: '1.0.0',
       sizeBytes: 1153434,
       sizeFormatted: '1.1 MB',
-      url: 'https://cdn.jsdelivr.net/gh/linguaforge/packs@main/fr/frequency.json.gz',
+      url: 'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/fr/frequency.json.gz',
     },
   ],
 });
@@ -115,7 +115,7 @@ const ItalianLanguagePack = createMultilingualLanguagePack({
       version: '1.0.0',
       sizeBytes: 3670016,
       sizeFormatted: '3.5 MB',
-      url: 'https://cdn.jsdelivr.net/gh/linguaforge/packs@main/it/dictionary.json.gz',
+      url: 'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/it/dictionary.json.gz',
       isCoreBundle: true,
     },
     {
@@ -125,7 +125,7 @@ const ItalianLanguagePack = createMultilingualLanguagePack({
       version: '1.0.0',
       sizeBytes: 1048576,
       sizeFormatted: '1.0 MB',
-      url: 'https://cdn.jsdelivr.net/gh/linguaforge/packs@main/it/frequency.json.gz',
+      url: 'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/it/frequency.json.gz',
     },
   ],
 });
@@ -156,7 +156,7 @@ const PortugueseLanguagePack = createMultilingualLanguagePack({
       version: '1.0.0',
       sizeBytes: 3774873,
       sizeFormatted: '3.6 MB',
-      url: 'https://cdn.jsdelivr.net/gh/linguaforge/packs@main/pt/dictionary.json.gz',
+      url: 'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/pt/dictionary.json.gz',
       isCoreBundle: true,
     },
     {
@@ -166,7 +166,7 @@ const PortugueseLanguagePack = createMultilingualLanguagePack({
       version: '1.0.0',
       sizeBytes: 1048576,
       sizeFormatted: '1.0 MB',
-      url: 'https://cdn.jsdelivr.net/gh/linguaforge/packs@main/pt/frequency.json.gz',
+      url: 'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/pt/frequency.json.gz',
     },
   ],
 });
@@ -197,7 +197,7 @@ const TurkishLanguagePack = createMultilingualLanguagePack({
       version: '1.0.0',
       sizeBytes: 3460300,
       sizeFormatted: '3.3 MB',
-      url: 'https://cdn.jsdelivr.net/gh/linguaforge/packs@main/tr/dictionary.json.gz',
+      url: 'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/tr/dictionary.json.gz',
       isCoreBundle: true,
     },
     {
@@ -207,7 +207,7 @@ const TurkishLanguagePack = createMultilingualLanguagePack({
       version: '1.0.0',
       sizeBytes: 1048576,
       sizeFormatted: '1.0 MB',
-      url: 'https://cdn.jsdelivr.net/gh/linguaforge/packs@main/tr/frequency.json.gz',
+      url: 'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/tr/frequency.json.gz',
     },
   ],
 });
@@ -238,7 +238,7 @@ const DutchLanguagePack = createMultilingualLanguagePack({
       version: '1.0.0',
       sizeBytes: 3565158,
       sizeFormatted: '3.4 MB',
-      url: 'https://cdn.jsdelivr.net/gh/linguaforge/packs@main/nl/dictionary.json.gz',
+      url: 'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/nl/dictionary.json.gz',
       isCoreBundle: true,
     },
     {
@@ -248,7 +248,7 @@ const DutchLanguagePack = createMultilingualLanguagePack({
       version: '1.0.0',
       sizeBytes: 1048576,
       sizeFormatted: '1.0 MB',
-      url: 'https://cdn.jsdelivr.net/gh/linguaforge/packs@main/nl/frequency.json.gz',
+      url: 'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/nl/frequency.json.gz',
     },
   ],
 });
@@ -279,7 +279,7 @@ const KoreanLanguagePack = createMultilingualLanguagePack({
       version: '1.0.0',
       sizeBytes: 4718592,
       sizeFormatted: '4.5 MB',
-      url: 'https://cdn.jsdelivr.net/gh/linguaforge/packs@main/ko/dictionary.json.gz',
+      url: 'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/ko/dictionary.json.gz',
       isCoreBundle: true,
     },
     {
@@ -289,7 +289,7 @@ const KoreanLanguagePack = createMultilingualLanguagePack({
       version: '1.0.0',
       sizeBytes: 1363148,
       sizeFormatted: '1.3 MB',
-      url: 'https://cdn.jsdelivr.net/gh/linguaforge/packs@main/ko/frequency.json.gz',
+      url: 'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/ko/frequency.json.gz',
     },
   ],
 });
@@ -320,7 +320,7 @@ const MandarinLanguagePack = createMultilingualLanguagePack({
       version: '1.0.0',
       sizeBytes: 5976883,
       sizeFormatted: '5.7 MB',
-      url: 'https://cdn.jsdelivr.net/gh/linguaforge/packs@main/zh/dictionary.json.gz',
+      url: 'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/zh/dictionary.json.gz',
       isCoreBundle: true,
     },
     {
@@ -330,7 +330,7 @@ const MandarinLanguagePack = createMultilingualLanguagePack({
       version: '1.0.0',
       sizeBytes: 1572864,
       sizeFormatted: '1.5 MB',
-      url: 'https://cdn.jsdelivr.net/gh/linguaforge/packs@main/zh/frequency.json.gz',
+      url: 'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/zh/frequency.json.gz',
     },
   ],
 });

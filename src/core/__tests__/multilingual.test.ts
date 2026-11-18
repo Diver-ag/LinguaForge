@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import assert from 'node:assert/strict';
 import { db } from '../../db/db';
 import { addCardsForWord, ensureDefaultDeck, getDefaultDeckId } from '../../db/cards';
-import { packSupportsRuby } from '../languagePack';
+import { mapFrequencyRankToLevel, packSupportsRuby } from '../languagePack';
 import { getAllLanguagePacks, getLanguagePack } from '../../packs/registry';
 import { buildMandarinPinyinSegments } from '../../packs/multilingualPack';
 import { extractSentenceWithOffsets, resolveClozeFromSentence } from '../cloze';
@@ -13,15 +13,21 @@ import {
 } from '../ankiExportCore';
 import { formatAnkiTtsTag } from '../speech';
 import {
+  DEFAULT_PACK_MANIFEST_URL,
   getInstalledLanguageIds,
   getInstalledPacksMap,
+  getPackManifestUrl,
   importCustomLanguageJsonOrCsv,
   installLanguagePack,
   isAbortError,
   removeLanguagePack,
+  resolveManifestPackUrl,
+  setPackManifestUrl,
+  toggleLanguageSubpack,
 } from '../packManager';
 import { getDeveloperSettings, saveDeveloperSettings } from '../studySettings';
 import { exportFullBackup, restoreFromBackup } from '../backup';
+import { gzipSync } from 'node:zlib';
 
 async function runTests() {
   console.log('--- Running Phase 3A Multi-Language Support & Pack Manager Tests ---');
@@ -278,9 +284,92 @@ async function runTests() {
   assert.ok(await db.decks.get(getDefaultDeckId('de')));
   console.log('PASS: Pack install (starter fallback), cancel AbortError, custom JSON/CSV, and safe removal');
 
-  // 7. Backup & Restore preserves installed packs, active language, and developer options
-  await installLanguagePack('ko');
-  await db.settings.put({ key: 'activeLanguage', value: 'ko' });
+  // 7. Cloud Pack Loader: jsDelivr default manifest URL, relative .json.gz resolution, gzip decompression, compact {w,r,t,p,m,f} schema, frequency->level mapping, and cloud-strict errors
+  assert.equal(
+    DEFAULT_PACK_MANIFEST_URL,
+    'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/manifest.json'
+  );
+  assert.equal(
+    resolveManifestPackUrl({ file: 'zh.json.gz', version: '1.2.0' }, DEFAULT_PACK_MANIFEST_URL),
+    'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/zh.json.gz'
+  );
+  assert.equal(mapFrequencyRankToLevel('de', 800), 'A1');
+  assert.equal(mapFrequencyRankToLevel('de', 1500), 'A2');
+  assert.equal(mapFrequencyRankToLevel('zh', 900), 'HSK 1');
+  assert.equal(mapFrequencyRankToLevel('ko', 4500), 'TOPIK 3');
+
+  const compactZhPackJson = JSON.stringify([
+    { w: '图书馆', r: 'tú shū guǎn', t: '圖書館', p: 'noun', m: ['library'], f: 850 },
+    { w: '火车站', r: 'huǒ chē zhàn', t: '火車站', p: 'noun', m: ['train station'], f: 1800 },
+  ]);
+  const gzBuffer = gzipSync(Buffer.from(compactZhPackJson, 'utf-8'));
+
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === DEFAULT_PACK_MANIFEST_URL) {
+      return new Response(
+        JSON.stringify({
+          manifestVersion: '1.0',
+          packs: {
+            zh: { file: 'zh.json.gz', version: '2.0.0', entryCount: 2, sizeBytes: gzBuffer.byteLength },
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      );
+    }
+    if (url === 'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/zh.json.gz') {
+      return new Response(new Uint8Array(gzBuffer), {
+        status: 200,
+        headers: { 'content-length': String(gzBuffer.byteLength) },
+      });
+    }
+    return new Response('Not found', { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    const zhCloudInstall = await installLanguagePack('zh', { mode: 'cloud-strict' });
+    assert.equal(zhCloudInstall.source, 'cloud');
+    assert.equal(zhCloudInstall.record.version, '2.0.0');
+    assert.ok(zhCloudInstall.entryCount >= 2);
+
+    const zhSimplifiedLookup = await zhPack.lookup('图书馆');
+    assert.ok(zhSimplifiedLookup);
+    assert.equal(zhSimplifiedLookup.meanings[0], 'library');
+    assert.equal(zhSimplifiedLookup.level, 'HSK 1');
+
+    const zhTraditionalLookup = await zhPack.lookup('圖書館');
+    assert.ok(zhTraditionalLookup, 'Traditional form t should resolve to the dictionary entry');
+    assert.equal(zhTraditionalLookup.word, '图书馆');
+
+    const zhStationLookup = await zhPack.lookup('火车站');
+    assert.ok(zhStationLookup);
+    assert.equal(zhStationLookup.level, 'HSK 2');
+
+    // cloud-strict must throw cleanly on missing pack/404 so UI displays Error + Retry
+    let strictErrored = false;
+    try {
+      await installLanguagePack('it', { mode: 'cloud-strict' });
+    } catch {
+      strictErrored = true;
+    }
+    assert.equal(strictErrored, true);
+
+    // Developer sub-pack toggle
+    await toggleLanguageSubpack('zh', 'zh-freq-hsk', 'remove');
+    const afterSubRemove = await getInstalledPacksMap();
+    assert.equal(afterSubRemove.zh?.subpacks?.includes('zh-freq-hsk'), false);
+    await toggleLanguageSubpack('zh', 'zh-freq-hsk', 'add');
+    const afterSubAdd = await getInstalledPacksMap();
+    assert.equal(afterSubAdd.zh?.subpacks?.includes('zh-freq-hsk'), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  console.log('PASS: Cloud Pack Loader (.json.gz decompression, compact {w,r,t,p,m,f} schema, auto-levels, strict errors, sub-packs)');
+
+  // 8. Backup & Restore preserves installed packs, active language, manifest URL, and developer options
+  await installLanguagePack('ko', { mode: 'starter' });
+  await db.settings.put({ key: 'activeLanguageId', value: 'ko' });
+  await setPackManifestUrl('https://example.com/custom/manifest.json');
   await saveDeveloperSettings({ showDeveloperTools: true });
 
   const backupJson = await exportFullBackup();
@@ -292,12 +381,14 @@ async function runTests() {
 
   const restoredPacks = await getInstalledPacksMap();
   assert.ok(restoredPacks.ko, 'Backup restore must restore installedPacks');
-  const restoredActiveLang = await db.settings.get('activeLanguage');
+  const restoredActiveLang = await db.settings.get('activeLanguageId');
   assert.equal(restoredActiveLang?.value, 'ko');
+  const restoredManifestUrl = await getPackManifestUrl();
+  assert.equal(restoredManifestUrl, 'https://example.com/custom/manifest.json');
   const restoredDev = await getDeveloperSettings();
   assert.equal(restoredDev.showDeveloperTools, true);
   assert.equal(restoredDev.includeDemoData, false);
-  console.log('PASS: Backup & restore preserves installedLanguagePacks, activeLanguage, and Developer Options');
+  console.log('PASS: Backup & restore preserves installedLanguagePacks, activeLanguageId, manifestUrl, and Developer Options');
 
   console.log('ALL PHASE 3A MULTILINGUAL TESTS PASSED');
 }

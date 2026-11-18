@@ -12,16 +12,18 @@ import { STARTER_LEXICONS, type StarterLexiconEntry } from '../packs/starterData
 import { JAPANESE_DICTIONARY_SAMPLE } from '../packs/japanese/dictionaryData';
 import { deriveFrequencyInfo } from '../packs/japanese/jmdictFrequency';
 import { buildMandarinPinyinSegments } from '../packs/multilingualPack';
+import { mapFrequencyRankToLevel } from './languagePack';
 import { logEvent } from './eventLogger';
 
 export const DEFAULT_PACK_MANIFEST_URL =
-  'https://cdn.jsdelivr.net/gh/linguaforge/packs@main/manifest.json';
+  'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/manifest.json';
 export const PACK_MANIFEST_URL_KEY = 'packManifestUrl';
 const INSTALLED_PACKS_SEEDED_KEY = 'installedPacksSeededV1';
 
 export interface CloudPackManifestItem {
-  version: string;
-  bundleUrl: string;
+  version?: string;
+  file?: string;
+  bundleUrl?: string;
   sizeBytes?: number;
   entryCount?: number;
   checksum?: string;
@@ -31,6 +33,23 @@ export interface CloudPackManifest {
   manifestVersion?: string;
   updatedAt?: string;
   packs: Record<string, CloudPackManifestItem>;
+}
+
+export function resolveManifestPackUrl(
+  item: CloudPackManifestItem | undefined,
+  manifestUrl: string
+): string | null {
+  const rawRef = (item?.file || item?.bundleUrl || '').trim();
+  if (!rawRef) return null;
+  try {
+    return new URL(rawRef, manifestUrl).toString();
+  } catch {
+    if (rawRef.startsWith('http://') || rawRef.startsWith('https://')) {
+      return rawRef;
+    }
+    const base = manifestUrl.replace(/\/[^/]*$/, '/');
+    return `${base}${rawRef.replace(/^\.\//, '')}`;
+  }
 }
 
 export interface PackInstallProgress {
@@ -175,15 +194,86 @@ export async function fetchCloudPackManifest(
   }
 }
 
-interface RawPackEntryInput {
+export interface RawPackEntryInput {
   id?: string;
   word: string;
+  traditionalForm?: string;
   readings?: string[];
   meanings: string[];
   partsOfSpeech?: string[];
   level?: string;
   frequencyRank?: number;
   aliases?: string[];
+}
+
+export function normalizeRawPackItem(
+  item: unknown,
+  kind: 'dictionary' | 'frequency' = 'dictionary'
+): RawPackEntryInput | null {
+  if (!item || typeof item !== 'object') return null;
+  const obj = item as Record<string, any>;
+
+  const word = String(obj.w ?? obj.word ?? obj.term ?? obj.headword ?? '').trim();
+  if (!word) return null;
+
+  const tradRaw = typeof obj.t === 'string' ? obj.t.trim() : '';
+  const traditionalForm = tradRaw && tradRaw !== word ? tradRaw : undefined;
+
+  const readingsRaw = obj.r ?? obj.readings ?? obj.reading ?? obj.pinyin ?? '';
+  const readings = Array.isArray(readingsRaw)
+    ? readingsRaw.map((v) => String(v).trim()).filter(Boolean)
+    : String(readingsRaw || '')
+        .split(/[;|]/)
+        .map((v) => v.trim())
+        .filter(Boolean);
+
+  const meaningsRaw = obj.m ?? obj.meanings ?? obj.meaning ?? obj.glosses ?? obj.definition ?? '';
+  const meanings = Array.isArray(meaningsRaw)
+    ? meaningsRaw.map((v) => String(v).trim()).filter(Boolean)
+    : String(meaningsRaw || '')
+        .split(/[;|]/)
+        .map((v) => v.trim())
+        .filter(Boolean);
+
+  const posRaw = obj.p ?? obj.partsOfSpeech ?? obj.pos;
+  const partsOfSpeech = Array.isArray(posRaw)
+    ? posRaw.map((v) => String(v).trim()).filter(Boolean)
+    : typeof posRaw === 'string' && posRaw.trim()
+    ? posRaw
+        .split(/[,;|]/)
+        .map((v) => v.trim())
+        .filter(Boolean)
+    : undefined;
+
+  const rankNum = Number(obj.f ?? obj.frequencyRank ?? obj.rank ?? obj.freq);
+  const frequencyRank = Number.isFinite(rankNum) && rankNum > 0 ? Math.round(rankNum) : undefined;
+
+  const levelRaw = obj.level ?? obj.cefr ?? obj.hsk ?? obj.topik ?? obj.jlpt;
+  const level = typeof levelRaw === 'string' && levelRaw.trim() ? levelRaw.trim() : undefined;
+
+  const aliases: string[] = Array.isArray(obj.aliases)
+    ? obj.aliases.map((v) => String(v).trim()).filter(Boolean)
+    : [];
+  if (traditionalForm && !aliases.includes(traditionalForm)) {
+    aliases.push(traditionalForm);
+  }
+
+  return {
+    id: typeof obj.id === 'string' ? obj.id : undefined,
+    word,
+    traditionalForm,
+    readings,
+    meanings:
+      meanings.length > 0
+        ? meanings
+        : kind === 'frequency'
+        ? [`Frequency entry (${word})`]
+        : [word],
+    partsOfSpeech,
+    level,
+    frequencyRank,
+    aliases: aliases.length > 0 ? aliases : undefined,
+  };
 }
 
 function normalizeEntriesToJmdictItems(
@@ -214,6 +304,9 @@ function normalizeEntriesToJmdictItems(
       : ['Word'];
 
     const formsSet = new Set<string>([word, word.toLowerCase()]);
+    if (raw.traditionalForm) {
+      formsSet.add(raw.traditionalForm);
+    }
     for (const r of readings) {
       formsSet.add(r);
       formsSet.add(r.toLowerCase());
@@ -232,12 +325,20 @@ function normalizeEntriesToJmdictItems(
         : undefined;
     const freqInfo = deriveFrequencyInfo([], freqRank);
     const priorityScore = freqRank ? Math.max(10, 10000 - Math.min(9990, freqRank)) : 100;
+    const resolvedLevel = raw.level || mapFrequencyRankToLevel(languageId, freqRank);
+    const isCommon = freqRank !== undefined ? freqRank <= 2500 : true;
+    const kanjiList = raw.traditionalForm
+      ? [
+          { text: word, common: isCommon },
+          { text: raw.traditionalForm, common: isCommon },
+        ]
+      : [{ text: word, common: isCommon }];
 
     out.push({
       id: raw.id ? `${languageId}-${raw.id}` : `${importId}-${i}-${word}`,
       languageCode: languageId,
       forms: Array.from(formsSet),
-      kanji: [{ text: word, common: freqRank !== undefined ? freqRank <= 2500 : true }],
+      kanji: kanjiList,
       kana: readings.map((r) => ({ text: r })),
       senses: [
         {
@@ -251,7 +352,7 @@ function normalizeEntriesToJmdictItems(
       priorityTags: [],
       frequencyBand: freqInfo.frequencyBand,
       frequencyRank: freqRank,
-      jlptLevel: raw.level || undefined,
+      jlptLevel: resolvedLevel,
       importIds: [importId],
       kinds: [kind],
     });
@@ -259,8 +360,50 @@ function normalizeEntriesToJmdictItems(
   return out;
 }
 
+export function isGzipBytes(bytes: Uint8Array): boolean {
+  return bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+}
+
+export async function decompressGzipBytesToText(bytes: Uint8Array): Promise<string> {
+  if (typeof DecompressionStream === 'undefined') {
+    throw new Error('Gzip decompression (DecompressionStream) is not supported in this browser.');
+  }
+  const sliced = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  const ds = new DecompressionStream('gzip');
+  const stream = new Blob([sliced]).stream().pipeThrough(ds);
+  return await new Response(stream).text();
+}
+
+export function extractRawPackEntriesFromParsedJson(parsed: unknown): RawPackEntryInput[] {
+  let rawArray: unknown[] | null = null;
+  if (Array.isArray(parsed)) {
+    rawArray = parsed;
+  } else if (parsed && typeof parsed === 'object') {
+    const obj = parsed as Record<string, any>;
+    if (Array.isArray(obj.entries)) {
+      rawArray = obj.entries;
+    } else if (Array.isArray(obj.words)) {
+      rawArray = obj.words;
+    } else if (Array.isArray(obj.items)) {
+      rawArray = obj.items;
+    }
+  }
+
+  if (!rawArray) {
+    throw new Error('Unexpected pack bundle format.');
+  }
+
+  const out: RawPackEntryInput[] = [];
+  for (const item of rawArray) {
+    const normalized = normalizeRawPackItem(item);
+    if (normalized) out.push(normalized);
+  }
+  return out;
+}
+
 async function streamAndParseCloudBundle(
   bundleUrl: string,
+  expectedTotalBytes?: number,
   signal?: AbortSignal,
   onProgress?: (p: PackInstallProgress) => void
 ): Promise<RawPackEntryInput[]> {
@@ -269,7 +412,7 @@ async function streamAndParseCloudBundle(
     throw new Error(`HTTP ${res.status} while downloading pack bundle`);
   }
 
-  const totalHeader = Number(res.headers.get('content-length') || 0);
+  const totalHeader = Number(res.headers.get('content-length') || 0) || expectedTotalBytes || 0;
   let bytes: Uint8Array;
 
   if (res.body && typeof res.body.getReader === 'function') {
@@ -284,7 +427,10 @@ async function streamAndParseCloudBundle(
       if (value) {
         chunks.push(value);
         loaded += value.byteLength;
-        const pct = totalHeader > 0 ? Math.min(80, Math.round((loaded / totalHeader) * 80)) : 35;
+        const pct =
+          totalHeader > 0
+            ? Math.min(72, Math.max(15, Math.round((loaded / totalHeader) * 72)))
+            : 35;
         onProgress?.({
           percent: pct,
           stage: 'Downloading language pack...',
@@ -303,10 +449,11 @@ async function streamAndParseCloudBundle(
   } else {
     const buf = await res.arrayBuffer();
     bytes = new Uint8Array(buf);
-    onProgress?.({ percent: 80, stage: 'Downloaded pack bundle' });
+    onProgress?.({ percent: 72, stage: 'Downloaded pack bundle' });
   }
 
   throwIfAborted(signal);
+  onProgress?.({ percent: 75, stage: 'Decompressing pack...' });
 
   let jsonText = '';
   const lowerUrl = bundleUrl.toLowerCase();
@@ -318,26 +465,15 @@ async function streamAndParseCloudBundle(
       throw new Error('Pack archive does not contain a JSON dictionary file.');
     }
     jsonText = await zip.files[jsonName].async('text');
-  } else if (lowerUrl.endsWith('.gz')) {
-    if (typeof DecompressionStream !== 'undefined') {
-      const ds = new DecompressionStream('gzip');
-      const stream = new Blob([bytes.buffer as ArrayBuffer]).stream().pipeThrough(ds);
-      jsonText = await new Response(stream).text();
-    } else {
-      throw new Error('Gzip decompression is not supported in this browser.');
-    }
+  } else if (lowerUrl.endsWith('.gz') || isGzipBytes(bytes)) {
+    jsonText = await decompressGzipBytesToText(bytes);
   } else {
     jsonText = new TextDecoder().decode(bytes);
   }
 
+  throwIfAborted(signal);
   const parsed = JSON.parse(jsonText);
-  if (Array.isArray(parsed)) {
-    return parsed as RawPackEntryInput[];
-  }
-  if (parsed && Array.isArray(parsed.entries)) {
-    return parsed.entries as RawPackEntryInput[];
-  }
-  throw new Error('Unexpected pack bundle format.');
+  return extractRawPackEntriesFromParsedJson(parsed);
 }
 
 function getBundledStarterInput(languageId: string): RawPackEntryInput[] {
@@ -393,19 +529,30 @@ export async function installLanguagePack(
     typeof fetch !== 'undefined' &&
     (typeof navigator === 'undefined' || navigator.onLine !== false);
 
+  const manifestUrl = (options?.manifestUrl || (await getPackManifestUrl())).trim();
+
   if (shouldTryCloud) {
     try {
-      onProgress?.({ percent: 12, stage: 'Checking pack manifest...' });
-      const manifestUrl = options?.manifestUrl || (await getPackManifestUrl());
+      onProgress?.({ percent: 10, stage: 'Fetching pack manifest...' });
       const manifest = await fetchCloudPackManifest(manifestUrl, signal);
       throwIfAborted(signal);
 
+      if (!manifest && mode === 'cloud-strict') {
+        throw new Error('Could not reach cloud pack manifest. Check connection or use offline starter.');
+      }
+
       const manifestEntry = manifest?.packs?.[languageId];
-      if (manifestEntry?.bundleUrl) {
-        rawEntries = await streamAndParseCloudBundle(manifestEntry.bundleUrl, signal, onProgress);
+      const resolvedUrl = resolveManifestPackUrl(manifestEntry, manifestUrl);
+      if (resolvedUrl) {
+        rawEntries = await streamAndParseCloudBundle(
+          resolvedUrl,
+          manifestEntry?.sizeBytes,
+          signal,
+          onProgress
+        );
         resolvedSource = 'cloud';
-        resolvedVersion = manifestEntry.version || resolvedVersion;
-        resolvedSizeBytes = manifestEntry.sizeBytes || resolvedSizeBytes;
+        resolvedVersion = manifestEntry?.version || resolvedVersion;
+        resolvedSizeBytes = manifestEntry?.sizeBytes || resolvedSizeBytes;
         usedManifestUrl = manifestUrl;
       } else if (mode === 'cloud-strict') {
         throw new Error(`No cloud pack entry found for ${pack.name} in manifest.`);
@@ -417,6 +564,8 @@ export async function installLanguagePack(
       }
       // In 'auto' mode, cleanly fall back to bundled starter dataset
     }
+  } else if (mode === 'cloud-strict') {
+    throw new Error('You appear to be offline. Connect to download or install the offline starter pack.');
   }
 
   throwIfAborted(signal);
@@ -429,7 +578,7 @@ export async function installLanguagePack(
     resolvedSource = languageId === 'ja' ? 'bundled' : 'starter';
   }
 
-  onProgress?.({ percent: 75, stage: `Indexing ${rawEntries.length} vocabulary entries...` });
+  onProgress?.({ percent: 80, stage: `Indexing ${rawEntries.length.toLocaleString()} vocabulary entries...` });
 
   const importId = `pack-${languageId}-${resolvedSource}`;
   const normalizedRows = normalizeEntriesToJmdictItems(languageId, importId, rawEntries, 'dictionary');
@@ -448,14 +597,24 @@ export async function installLanguagePack(
     description: `${pack.name} ${resolvedSource === 'cloud' ? 'Cloud' : 'Starter'} Vocabulary Pack`,
   };
 
-  // Replace previous starter/cloud entries for this importId smoothly without touching study data
+  // Batch IndexedDB writes in chunks so large cloud packs don't freeze the UI thread
+  const BATCH_SIZE = 2000;
+  for (let i = 0; i < normalizedRows.length; i += BATCH_SIZE) {
+    throwIfAborted(signal);
+    const slice = normalizedRows.slice(i, i + BATCH_SIZE);
+    await db.jmdictEntries.bulkPut(slice);
+    const ratio = (i + slice.length) / Math.max(1, normalizedRows.length);
+    onProgress?.({
+      percent: Math.min(97, 80 + Math.round(ratio * 17)),
+      stage: `Storing offline dictionary (${Math.min(i + slice.length, normalizedRows.length).toLocaleString()} / ${normalizedRows.length.toLocaleString()})...`,
+    });
+  }
+
+  // Record metadata without touching flashcards, decks, lookups, or documents
   await db.transaction(
     'rw',
-    [db.jmdictEntries, db.imports, db.downloadedAssets, db.installedPacks],
+    [db.imports, db.downloadedAssets, db.installedPacks],
     async () => {
-      if (normalizedRows.length > 0) {
-        await db.jmdictEntries.bulkPut(normalizedRows);
-      }
       await db.imports.put(importRecord);
 
       for (const asset of pack.assetsManifest) {
@@ -613,37 +772,10 @@ export async function importCustomLanguageJsonOrCsv(
         );
 
     for (const item of list) {
-      if (!item || typeof item !== 'object') continue;
-      const word = String(item.word || item.term || item.headword || '').trim();
-      if (!word) continue;
-      const meaningsRaw = item.meanings ?? item.meaning ?? item.glosses ?? item.definition ?? '';
-      const meanings = Array.isArray(meaningsRaw)
-        ? meaningsRaw.map(String)
-        : String(meaningsRaw)
-            .split(/[;|]/)
-            .map((s) => s.trim())
-            .filter(Boolean);
-      const readingsRaw = item.readings ?? item.reading ?? item.pinyin ?? '';
-      const readings = Array.isArray(readingsRaw)
-        ? readingsRaw.map(String)
-        : String(readingsRaw)
-            .split(/[;|]/)
-            .map((s) => s.trim())
-            .filter(Boolean);
-      const rankNum = Number(item.frequencyRank ?? item.rank ?? item.freq);
-      parsedEntries.push({
-        word,
-        readings,
-        meanings: meanings.length > 0 ? meanings : kind === 'frequency' ? [`Frequency entry (${word})`] : [word],
-        partsOfSpeech: Array.isArray(item.partsOfSpeech)
-          ? item.partsOfSpeech
-          : item.pos
-          ? [String(item.pos)]
-          : undefined,
-        level: item.level ? String(item.level) : undefined,
-        frequencyRank: Number.isFinite(rankNum) && rankNum > 0 ? rankNum : undefined,
-        aliases: Array.isArray(item.aliases) ? item.aliases.map(String) : undefined,
-      });
+      const normalizedItem = normalizeRawPackItem(item, kind);
+      if (normalizedItem) {
+        parsedEntries.push(normalizedItem);
+      }
     }
   } else {
     const rows = parseSimpleCsvLines(trimmed);
@@ -717,12 +849,17 @@ export async function importCustomLanguageJsonOrCsv(
     description: `Custom ${kind} import (${fileName})`,
   };
 
-  await db.transaction('rw', [db.jmdictEntries, db.imports, db.installedPacks], async () => {
-    await db.jmdictEntries.bulkPut(normalized);
+  const BATCH_SIZE = 2000;
+  for (let i = 0; i < normalized.length; i += BATCH_SIZE) {
+    await db.jmdictEntries.bulkPut(normalized.slice(i, i + BATCH_SIZE));
+  }
+
+  const totalCount = await db.jmdictEntries.where('languageCode').equals(languageId).count();
+
+  await db.transaction('rw', [db.imports, db.installedPacks], async () => {
     await db.imports.put(imp);
 
     const existingPack = await db.installedPacks.get(languageId);
-    const totalCount = await db.jmdictEntries.where('languageCode').equals(languageId).count();
     const packMeta = getLanguagePack(languageId);
     await db.installedPacks.put({
       languageId,
@@ -739,4 +876,73 @@ export async function importCustomLanguageJsonOrCsv(
   await ensureDefaultDeck(languageId);
   await logEvent('custom_pack_imported', { languageId, kind, importedCount: normalized.length });
   return { importedCount: normalized.length };
+}
+
+/**
+ * Developer utility: imports a local .json, .json.gz, .csv, .tsv, or .txt pack file.
+ */
+export async function importCustomLanguageFile(
+  languageId: string,
+  file: File,
+  kind: 'dictionary' | 'frequency'
+): Promise<{ importedCount: number }> {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let text = '';
+  if (file.name.toLowerCase().endsWith('.gz') || isGzipBytes(bytes)) {
+    text = await decompressGzipBytesToText(bytes);
+  } else {
+    text = new TextDecoder().decode(bytes);
+  }
+  return importCustomLanguageJsonOrCsv(languageId, text, kind, file.name);
+}
+
+/**
+ * Developer utility: adds or removes an individual sub-pack component for a language.
+ */
+export async function toggleLanguageSubpack(
+  languageId: string,
+  assetId: string,
+  action: 'add' | 'remove'
+): Promise<void> {
+  const pack = getLanguagePack(languageId);
+  const asset = pack.assetsManifest.find((a) => a.id === assetId);
+  if (!asset) return;
+
+  const now = Date.now();
+  if (action === 'add') {
+    await db.downloadedAssets.put({
+      packId: languageId,
+      assetId: asset.id,
+      name: asset.name,
+      version: asset.version || pack.packVersion || '1.0.0',
+      sizeBytes: asset.sizeBytes,
+      installedAt: now,
+    });
+    const existing = await db.installedPacks.get(languageId);
+    const subpacks = Array.from(new Set([...(existing?.subpacks || []), assetId]));
+    await db.installedPacks.put({
+      languageId,
+      version: existing?.version || pack.packVersion || '1.0.0',
+      installedAt: existing?.installedAt || now,
+      updatedAt: now,
+      source: existing?.source || (languageId === 'ja' ? 'bundled' : 'starter'),
+      entryCount: existing?.entryCount || 0,
+      sizeBytes: (existing?.sizeBytes || 0) + asset.sizeBytes,
+      subpacks,
+      manifestUrl: existing?.manifestUrl,
+    });
+    await ensureDefaultDeck(languageId);
+  } else {
+    await db.downloadedAssets.delete([languageId, assetId]);
+    const existing = await db.installedPacks.get(languageId);
+    if (existing) {
+      const nextSubpacks = (existing.subpacks || []).filter((id) => id !== assetId);
+      await db.installedPacks.put({
+        ...existing,
+        updatedAt: now,
+        subpacks: nextSubpacks,
+      });
+    }
+  }
 }

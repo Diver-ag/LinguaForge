@@ -1,12 +1,13 @@
 import { pinyin } from 'pinyin-pro';
-import type {
-  DictionaryEntry,
-  DifficultyLevelSystem,
-  FuriganaSegment,
-  GrammarPoint,
-  LanguagePack,
-  PackAssetManifestItem,
-  Token,
+import {
+  mapFrequencyRankToLevel,
+  type DictionaryEntry,
+  type DifficultyLevelSystem,
+  type FuriganaSegment,
+  type GrammarPoint,
+  type LanguagePack,
+  type PackAssetManifestItem,
+  type Token,
 } from '../core/languagePack';
 import { db, type JmdictEntryItem } from '../db/db';
 import { deriveFrequencyInfo } from './japanese/jmdictFrequency';
@@ -542,7 +543,7 @@ function dbEntryToDictionaryEntry(langId: string, row: JmdictEntryItem): Diction
     readings,
     meanings,
     partsOfSpeech: partsOfSpeech.length > 0 ? partsOfSpeech : ['Word'],
-    level: row.jlptLevel,
+    level: row.jlptLevel || mapFrequencyRankToLevel(langId, row.frequencyRank),
     frequencyRank: row.frequencyRank,
     frequencyBand: row.frequencyBand || freqInfo.frequencyBand,
     furiganaSegments: pySegs,
@@ -570,7 +571,7 @@ function starterEntryToDictionaryEntry(langId: string, entry: StarterLexiconEntr
     readings,
     meanings: entry.meanings,
     partsOfSpeech: entry.partsOfSpeech,
-    level: entry.level,
+    level: entry.level || mapFrequencyRankToLevel(langId, entry.frequencyRank),
     frequencyRank: entry.frequencyRank,
     frequencyBand: freqInfo.frequencyBand,
     furiganaSegments: pyInfo.furiganaSegments,
@@ -735,7 +736,9 @@ export function createMultilingualLanguagePack(config: MultilingualPackConfig): 
     },
 
     getLevel(word: string): string | null {
-      return findStarterEntry(config.id, word)?.level ?? null;
+      const entry = findStarterEntry(config.id, word);
+      if (!entry) return null;
+      return entry.level || mapFrequencyRankToLevel(config.id, entry.frequencyRank) || null;
     },
 
     getReading(token: Token | string) {

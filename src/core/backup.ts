@@ -16,8 +16,18 @@ export interface LinguaForgeBackupData {
   reviewLogs?: any[];
   exportHistory?: any[];
   installedLanguagePacks?: any[];
+  languagePackMetadata?: {
+    installedLanguageIds: string[];
+    versions: Record<string, string>;
+    activeLanguageId: string;
+    manifestUrl: string;
+    developerMode: boolean;
+  };
   eventLogs: any[];
 }
+
+const DEFAULT_MANIFEST_URL =
+  'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/manifest.json';
 
 export async function exportFullBackup(): Promise<string> {
   const [
@@ -61,6 +71,33 @@ export async function exportFullBackup(): Promise<string> {
     );
   const cleanReviewLogs = reviewLogs.filter((r) => !r.isDemo);
 
+  const settingsMap = new Map<string, any>(cleanSettings.map((s) => [s.key, s.value]));
+  const activeLanguageId = String(
+    settingsMap.get('activeLanguageId') || settingsMap.get('activeLanguage') || 'ja'
+  );
+  const manifestUrl = String(settingsMap.get('packManifestUrl') || DEFAULT_MANIFEST_URL);
+  const developerMode = Boolean(settingsMap.get('developerSettings')?.showDeveloperTools);
+
+  if (!settingsMap.has('activeLanguageId')) {
+    cleanSettings.push({ key: 'activeLanguageId', value: activeLanguageId });
+  }
+  if (!settingsMap.has('packManifestUrl')) {
+    cleanSettings.push({ key: 'packManifestUrl', value: manifestUrl });
+  }
+  if (!settingsMap.has('developerSettings')) {
+    cleanSettings.push({
+      key: 'developerSettings',
+      value: { showDeveloperTools: developerMode, includeDemoData: false },
+    });
+  }
+
+  const versions: Record<string, string> = {};
+  for (const p of installedLanguagePacks) {
+    if (p?.languageId) {
+      versions[p.languageId] = String(p.version || '1.0.0');
+    }
+  }
+
   const backup: LinguaForgeBackupData = {
     version: 2,
     appName: 'LinguaForge',
@@ -75,6 +112,13 @@ export async function exportFullBackup(): Promise<string> {
     reviewLogs: cleanReviewLogs,
     exportHistory,
     installedLanguagePacks,
+    languagePackMetadata: {
+      installedLanguageIds: installedLanguagePacks.map((p) => p.languageId).filter(Boolean),
+      versions,
+      activeLanguageId,
+      manifestUrl,
+      developerMode,
+    },
     eventLogs,
   };
 
@@ -152,6 +196,21 @@ export async function restoreFromBackup(jsonData: string): Promise<{ success: bo
                 : s
             );
           if (cleanSettings.length > 0) await db.settings.bulkPut(cleanSettings);
+        }
+        if (data.languagePackMetadata) {
+          const meta = data.languagePackMetadata;
+          if (meta.activeLanguageId) {
+            await db.settings.put({ key: 'activeLanguageId', value: meta.activeLanguageId });
+          }
+          if (meta.manifestUrl) {
+            await db.settings.put({ key: 'packManifestUrl', value: meta.manifestUrl });
+          }
+          if (typeof meta.developerMode === 'boolean') {
+            await db.settings.put({
+              key: 'developerSettings',
+              value: { showDeveloperTools: meta.developerMode, includeDemoData: false },
+            });
+          }
         }
         if (Array.isArray(data.flashcards)) {
           await db.flashcards.clear();

@@ -434,6 +434,13 @@ export const SettingsView: React.FC = () => {
       const result = await restoreFromBackup(jsonText);
       setIsRestoring(false);
       if (result.success) {
+        await useAppStore.getState().loadInitialSettings();
+        const [loadedDev, loadedStudy] = await Promise.all([
+          getDeveloperSettings(),
+          getStudySettings(),
+        ]);
+        setDevSettings(loadedDev);
+        setStudySettings(loadedStudy);
         setRestoreMessage({ type: 'success', text: result.message });
       } else {
         setRestoreMessage({ type: 'error', text: result.message });

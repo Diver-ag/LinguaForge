@@ -147,3 +147,57 @@ export function packSupportsRuby(pack: Pick<LanguagePack, 'id' | 'supportsRubyAn
   }
   return pack.id === 'ja' || pack.id === 'zh';
 }
+
+/**
+ * Automatically maps a word's frequency rank (1 = most frequent) to a study level badge
+ * when no explicit level tag is provided in a dictionary pack.
+ */
+export function mapFrequencyRankToLevel(languageId: string, frequencyRank?: number): string | undefined {
+  if (typeof frequencyRank !== 'number' || !Number.isFinite(frequencyRank) || frequencyRank <= 0) {
+    return undefined;
+  }
+
+  if (languageId === 'ja') {
+    if (frequencyRank <= 1000) return 'N5';
+    if (frequencyRank <= 2500) return 'N4';
+    if (frequencyRank <= 5000) return 'N3';
+    if (frequencyRank <= 10000) return 'N2';
+    return 'N1';
+  }
+
+  if (languageId === 'zh') {
+    if (frequencyRank <= 1000) return 'HSK 1';
+    if (frequencyRank <= 2500) return 'HSK 2';
+    if (frequencyRank <= 5000) return 'HSK 3';
+    if (frequencyRank <= 10000) return 'HSK 4';
+    if (frequencyRank <= 20000) return 'HSK 5';
+    return 'HSK 6';
+  }
+
+  if (languageId === 'ko') {
+    if (frequencyRank <= 1000) return 'TOPIK 1';
+    if (frequencyRank <= 2500) return 'TOPIK 2';
+    if (frequencyRank <= 5000) return 'TOPIK 3';
+    if (frequencyRank <= 10000) return 'TOPIK 4';
+    if (frequencyRank <= 20000) return 'TOPIK 5';
+    return 'TOPIK 6';
+  }
+
+  // European languages (de, fr, it, pt, tr, nl) -> CEFR A1-C2
+  if (frequencyRank <= 1000) return 'A1';
+  if (frequencyRank <= 2500) return 'A2';
+  if (frequencyRank <= 5000) return 'B1';
+  if (frequencyRank <= 10000) return 'B2';
+  if (frequencyRank <= 20000) return 'C1';
+  return 'C2';
+}
+
+export function formatPackBytes(bytes?: number): string {
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) {
+    return '0 B';
+  }
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
