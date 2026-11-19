@@ -271,6 +271,36 @@ export const STARTER_LEXICONS: Record<string, StarterLexiconEntry[]> = {
     { word: '很', readings: ['hěn'], meanings: ['very'], partsOfSpeech: ['Adverb'], level: 'HSK 1', frequencyRank: 16 },
     { word: '好', readings: ['hǎo'], meanings: ['good', 'well'], partsOfSpeech: ['Adjective'], level: 'HSK 1', frequencyRank: 22 },
   ],
+  es: [
+    { word: 'casa', readings: ['ˈka.sa'], meanings: ['house', 'home'], partsOfSpeech: ['Noun (f.)'], level: 'A1', frequencyRank: 150, aliases: ['casas'] },
+    { word: 'libro', readings: ['ˈli.βɾo'], meanings: ['book'], partsOfSpeech: ['Noun (m.)'], level: 'A1', frequencyRank: 240, aliases: ['libros'] },
+    { word: 'agua', readings: ['ˈa.ɣwa'], meanings: ['water'], partsOfSpeech: ['Noun (f.)'], level: 'A1', frequencyRank: 210 },
+    { word: 'hablar', readings: ['aˈβlaɾ'], meanings: ['to speak', 'to talk'], partsOfSpeech: ['Verb'], level: 'A1', frequencyRank: 115, aliases: ['hablo', 'hablas', 'habla', 'hablamos', 'hablan'] },
+    { word: 'leer', readings: ['leˈeɾ'], meanings: ['to read'], partsOfSpeech: ['Verb'], level: 'A1', frequencyRank: 280, aliases: ['leo', 'lees', 'lee', 'leemos', 'leído'] },
+    { word: 'escribir', readings: ['es.kɾiˈβiɾ'], meanings: ['to write'], partsOfSpeech: ['Verb'], level: 'A1', frequencyRank: 340, aliases: ['escribo', 'escribe', 'escribimos', 'escrito'] },
+    { word: 'aprender', readings: ['a.pɾenˈdeɾ'], meanings: ['to learn'], partsOfSpeech: ['Verb'], level: 'A1', frequencyRank: 360, aliases: ['aprendo', 'aprende', 'aprendemos'] },
+    { word: 'comer', readings: ['koˈmeɾ'], meanings: ['to eat'], partsOfSpeech: ['Verb'], level: 'A1', frequencyRank: 290, aliases: ['como', 'come', 'comemos', 'comiendo'] },
+    { word: 'ir', readings: ['iɾ'], meanings: ['to go'], partsOfSpeech: ['Verb'], level: 'A1', frequencyRank: 45, aliases: ['voy', 'vas', 'va', 'vamos', 'van'] },
+    { word: 'ser', readings: ['seɾ'], meanings: ['to be (essential)'], partsOfSpeech: ['Verb'], level: 'A1', frequencyRank: 12, aliases: ['soy', 'eres', 'es', 'somos', 'son'] },
+    { word: 'ciudad', readings: ['θjuˈðað'], meanings: ['city', 'town'], partsOfSpeech: ['Noun (f.)'], level: 'A1', frequencyRank: 225, aliases: ['ciudades'] },
+    { word: 'amigo', readings: ['aˈmi.ɣo'], meanings: ['friend'], partsOfSpeech: ['Noun (m.)'], level: 'A1', frequencyRank: 260, aliases: ['amiga', 'amigos', 'amigas'] },
+    { word: 'día', readings: ['ˈdi.a'], meanings: ['day'], partsOfSpeech: ['Noun (m.)'], level: 'A1', frequencyRank: 75, aliases: ['días', 'buenos días'] },
+    { word: 'tiempo', readings: ['ˈtjem.po'], meanings: ['time', 'weather'], partsOfSpeech: ['Noun (m.)'], level: 'A1', frequencyRank: 85 },
+    { word: 'idioma', readings: ['iˈðjo.ma'], meanings: ['language'], partsOfSpeech: ['Noun (m.)'], level: 'A2', frequencyRank: 640, aliases: ['idiomas'] },
+    { word: 'café', readings: ['kaˈfe'], meanings: ['coffee', 'cafe'], partsOfSpeech: ['Noun (m.)'], level: 'A1', frequencyRank: 690, aliases: ['cafés'] },
+    { word: 'hermoso', readings: ['eɾˈmo.so'], meanings: ['beautiful', 'lovely'], partsOfSpeech: ['Adjective'], level: 'A2', frequencyRank: 480, aliases: ['hermosa', 'hermosos', 'hermosas'] },
+    { word: 'grande', readings: ['ˈɡɾan.de'], meanings: ['big', 'large', 'great'], partsOfSpeech: ['Adjective'], level: 'A1', frequencyRank: 130, aliases: ['grandes', 'gran'] },
+    { word: 'pequeño', readings: ['peˈke.ɲo'], meanings: ['small', 'little'], partsOfSpeech: ['Adjective'], level: 'A1', frequencyRank: 205, aliases: ['pequeña', 'pequeños', 'pequeñas'] },
+    { word: 'nuevo', readings: ['ˈnwe.βo'], meanings: ['new'], partsOfSpeech: ['Adjective'], level: 'A1', frequencyRank: 105, aliases: ['nueva', 'nuevos', 'nuevas'] },
+    { word: 'hoy', readings: ['oj'], meanings: ['today'], partsOfSpeech: ['Adverb'], level: 'A1', frequencyRank: 140 },
+    { word: 'mañana', readings: ['maˈɲa.na'], meanings: ['morning', 'tomorrow'], partsOfSpeech: ['Noun / Adverb'], level: 'A1', frequencyRank: 175 },
+    { word: 'mundo', readings: ['ˈmun.do'], meanings: ['world'], partsOfSpeech: ['Noun (m.)'], level: 'A2', frequencyRank: 165 },
+    { word: 'experiencia', readings: ['eks.peˈɾjen.θja'], meanings: ['experience'], partsOfSpeech: ['Noun (f.)'], level: 'B1', frequencyRank: 1050, aliases: ['experiencias'] },
+    { word: 'embargo', readings: ['emˈbaɾ.ɣo'], meanings: ['however (sin embargo)'], partsOfSpeech: ['Noun / Expression'], level: 'B2', frequencyRank: 1350 },
+    { word: 'el', readings: ['el'], meanings: ['the (masculine)'], partsOfSpeech: ['Article'], level: 'A1', frequencyRank: 1, aliases: ['la', 'los', 'las'] },
+    { word: 'y', readings: ['i'], meanings: ['and'], partsOfSpeech: ['Conjunction'], level: 'A1', frequencyRank: 2 },
+    { word: 'en', readings: ['en'], meanings: ['in', 'on', 'at'], partsOfSpeech: ['Preposition'], level: 'A1', frequencyRank: 4 },
+  ],
 };
 
 export const STARTER_SAMPLE_DOCS: Record<string, StarterSampleDocument[]> = {
@@ -329,11 +359,18 @@ Her gün Türkçe öğreniyorum. Arkadaşımla şehirde konuşuyoruz ve güzel b
   ],
 };
 
-// Ensure clean Dutch sample doc
 STARTER_SAMPLE_DOCS.nl = [
   {
     title: 'Een ochtend in de stad (A Morning in the City)',
     content: `Goedemorgen! Vandaag is het weer heel mooi in de stad. Ik drink koffie in een klein huis en lees een nieuw boek.
 Elke dag leer ik Nederlands en spreek ik met een vriend over de wereld en nieuwe ervaringen.`,
+  },
+];
+
+STARTER_SAMPLE_DOCS.es = [
+  {
+    title: 'Una mañana en la ciudad (A Morning in the City)',
+    content: `¡Buenos días! Hoy hace muy buen tiempo en la ciudad. Voy a tomar un café y un vaso de agua con un amigo.
+Siempre llevo un libro nuevo para leer y aprender español cada día. Compartimos historias y nuevas experiencias sobre el mundo.`,
   },
 ];

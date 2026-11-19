@@ -9,13 +9,10 @@ import {
   clearLanguagePackCache,
   fetchCloudPackManifest,
   getInstalledPacksMap,
-  getPackManifestUrl,
   importCustomLanguageFile,
   installLanguagePack,
   isAbortError,
   removeLanguagePack,
-  resolveManifestPackUrl,
-  setPackManifestUrl,
   toggleLanguageSubpack,
   type CloudPackManifest,
   type PackInstallProgress,
@@ -31,7 +28,6 @@ import {
   Upload,
   AlertCircle,
   Loader2,
-  SlidersHorizontal,
   ArrowLeftRight,
   Plus,
   Minus,
@@ -54,9 +50,7 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
   const [installedMap, setInstalledMap] = useState<Record<string, InstalledLanguagePackRecord>>({});
   const [downloadedAssetsMap, setDownloadedAssetsMap] = useState<Record<string, DownloadedPackAsset[]>>({});
   const [isLoading, setIsLoading] = useState(true);
-  const [manifestUrl, setManifestUrlInput] = useState(DEFAULT_PACK_MANIFEST_URL);
   const [manifestData, setManifestData] = useState<CloudPackManifest | null>(null);
-  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
 
   // Per-pack download progress, abort controllers, errors, confirmations
   const [progressByLang, setProgressByLang] = useState<Record<string, PackInstallProgress | null>>({});
@@ -69,18 +63,15 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
   const [expandedDevLang, setExpandedDevLang] = useState<Record<string, boolean>>({});
   const [devEntryCounts, setDevEntryCounts] = useState<Record<string, number>>({});
   const [devStatusMsg, setDevStatusMsg] = useState<Record<string, string | null>>({});
-  const [manifestSavedToast, setManifestSavedToast] = useState(false);
 
   const loadPackStates = useCallback(
     async (fetchRemoteManifest = false) => {
       try {
-        const [map, url, allAssets] = await Promise.all([
+        const [map, allAssets] = await Promise.all([
           getInstalledPacksMap(),
-          getPackManifestUrl(),
           db.downloadedAssets.toArray().catch(() => [] as DownloadedPackAsset[]),
         ]);
         setInstalledMap(map);
-        setManifestUrlInput(url);
 
         const groupedAssets: Record<string, DownloadedPackAsset[]> = {};
         for (const a of allAssets) {
@@ -98,7 +89,7 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
         }
 
         if (fetchRemoteManifest) {
-          const remote = await fetchCloudPackManifest(url).catch(() => null);
+          const remote = await fetchCloudPackManifest(DEFAULT_PACK_MANIFEST_URL).catch(() => null);
           if (remote) {
             setManifestData(remote);
           }
@@ -140,7 +131,6 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
       await installLanguagePack(langId, {
         signal: controller.signal,
         mode,
-        manifestUrl,
         onProgress: (prog) => {
           setProgressByLang((prev) => ({ ...prev, [langId]: prog }));
         },
@@ -204,20 +194,6 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
     await setActiveLanguage(langId);
   };
 
-  const handleSaveManifestAndCheck = async () => {
-    setIsCheckingUpdates(true);
-    try {
-      const saved = await setPackManifestUrl(manifestUrl);
-      setManifestUrlInput(saved);
-      const manifest = await fetchCloudPackManifest(saved);
-      setManifestData(manifest);
-      setManifestSavedToast(true);
-      setTimeout(() => setManifestSavedToast(false), 2500);
-    } finally {
-      setIsCheckingUpdates(false);
-    }
-  };
-
   const handleCustomImport = async (
     langId: string,
     kind: 'dictionary' | 'frequency',
@@ -266,44 +242,7 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
 
   return (
     <div className="space-y-4">
-      {/* Developer-only Manifest Endpoint bar */}
-      {developerMode && (
-        <div className="p-4 rounded-2xl border border-[var(--border)] bg-[var(--surface-muted)]/60 space-y-2.5 text-xs">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div className="font-bold text-[var(--text)] flex items-center gap-1.5">
-              <SlidersHorizontal className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-              <span>Developer: Cloud Pack Manifest URL</span>
-            </div>
-            {manifestSavedToast && (
-              <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
-                {manifestData
-                  ? `Manifest synced (${Object.keys(manifestData.packs || {}).length} packs)`
-                  : 'URL saved (manifest unreachable — offline starter fallback ready)'}
-              </span>
-            )}
-          </div>
-          <div className="flex flex-col sm:flex-row gap-2">
-            <input
-              type="url"
-              value={manifestUrl}
-              onChange={(e) => setManifestUrlInput(e.target.value)}
-              placeholder={DEFAULT_PACK_MANIFEST_URL}
-              className="flex-1 min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] font-mono text-xs"
-            />
-            <button
-              type="button"
-              onClick={handleSaveManifestAndCheck}
-              disabled={isCheckingUpdates}
-              className="min-h-[38px] px-3.5 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] hover:bg-[var(--border)] font-bold text-[var(--text)] inline-flex items-center justify-center gap-1.5 shrink-0"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isCheckingUpdates ? 'animate-spin' : ''}`} />
-              <span>Save &amp; Check Updates</span>
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Clean 9-Language Grid */}
+      {/* Clean Language Grid */}
       {isLoading ? (
         <div className="py-10 flex items-center justify-center gap-2 text-xs text-[var(--text-muted)]">
           <Loader2 className="w-4 h-4 animate-spin text-indigo-600 dark:text-indigo-400" />
@@ -341,7 +280,6 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
               ? 'Installed'
               : 'Not Installed';
 
-            const resolvedPackUrl = resolveManifestPackUrl(manifestItem, manifestUrl);
             const installedAssetsForPack = downloadedAssetsMap[pack.id] || [];
             const installedSubpackIds = new Set<string>([
               ...(installed?.subpacks || []),
@@ -577,12 +515,6 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
                               <span className="font-semibold text-[var(--text)]">Frequency / Level index:</span>{' '}
                               {pack.levelSystem.name} ({pack.levelSystem.levels.map((l) => l.code).join(', ')})
                             </div>
-                            {resolvedPackUrl && (
-                              <div className="truncate font-mono text-[10px] text-[var(--text-muted)]" title={resolvedPackUrl}>
-                                <span className="font-sans font-semibold text-[var(--text)]">Bundle URL:</span>{' '}
-                                {resolvedPackUrl}
-                              </div>
-                            )}
                           </div>
 
                           <div className="space-y-1.5">

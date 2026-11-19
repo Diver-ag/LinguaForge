@@ -35,33 +35,34 @@ async function runTests() {
   await db.delete();
   await db.open();
 
-  // 1. Registry: 9 languages with expected metadata, TTS codes, level systems, and ruby flags
+  // 1. Registry: 10 languages with expected metadata, TTS codes, level systems, and ruby flags
   const allPacks = getAllLanguagePacks();
   const ids = allPacks.map((p) => p.id);
-  assert.deepEqual(ids, ['ja', 'de', 'fr', 'it', 'pt', 'tr', 'nl', 'ko', 'zh']);
-  assert.equal(ids.includes('es'), false);
+  assert.deepEqual(ids, ['ja', 'de', 'fr', 'it', 'pt', 'tr', 'nl', 'ko', 'zh', 'es']);
 
-  const expectedMeta: Record<string, { tts: string; levelName: string; ruby: boolean }> = {
-    ja: { tts: 'ja-JP', levelName: 'JLPT', ruby: true },
-    de: { tts: 'de-DE', levelName: 'CEFR', ruby: false },
-    fr: { tts: 'fr-FR', levelName: 'CEFR', ruby: false },
-    it: { tts: 'it-IT', levelName: 'CEFR', ruby: false },
-    pt: { tts: 'pt-BR', levelName: 'CEFR', ruby: false },
-    tr: { tts: 'tr-TR', levelName: 'CEFR', ruby: false },
-    nl: { tts: 'nl-NL', levelName: 'CEFR', ruby: false },
-    ko: { tts: 'ko-KR', levelName: 'TOPIK', ruby: false },
-    zh: { tts: 'zh-CN', levelName: 'HSK', ruby: true },
+  const expectedMeta: Record<string, { native: string; tts: string; levelName: string; ruby: boolean }> = {
+    ja: { native: '日本語', tts: 'ja-JP', levelName: 'JLPT', ruby: true },
+    de: { native: 'Deutsch', tts: 'de-DE', levelName: 'CEFR', ruby: false },
+    fr: { native: 'Français', tts: 'fr-FR', levelName: 'CEFR', ruby: false },
+    it: { native: 'Italiano', tts: 'it-IT', levelName: 'CEFR', ruby: false },
+    pt: { native: 'Português', tts: 'pt-BR', levelName: 'CEFR', ruby: false },
+    tr: { native: 'Türkçe', tts: 'tr-TR', levelName: 'CEFR', ruby: false },
+    nl: { native: 'Nederlands', tts: 'nl-NL', levelName: 'CEFR', ruby: false },
+    ko: { native: '한국어', tts: 'ko-KR', levelName: 'TOPIK', ruby: false },
+    zh: { native: '中文', tts: 'zh-CN', levelName: 'HSK', ruby: true },
+    es: { native: 'Español', tts: 'es-ES', levelName: 'CEFR', ruby: false },
   };
 
   for (const [langId, exp] of Object.entries(expectedMeta)) {
     const p = getLanguagePack(langId);
     assert.equal(p.id, langId);
+    assert.equal(p.nativeName, exp.native);
     assert.equal(p.ttsCode, exp.tts);
     assert.equal(p.levelSystem.name, exp.levelName);
     assert.equal(packSupportsRuby(p), exp.ruby);
     assert.ok(p.sampleTestPhrase && p.sampleTestPhrase.length > 0);
   }
-  console.log('PASS: 9 languages registered with TTS codes, level systems, and ruby flags');
+  console.log('PASS: 10 languages registered with native names, TTS codes, level systems, and ruby flags');
 
   // 2. Intl.Segmenter tokenization & exact offsets + Cloze offset compatibility across languages
   const dePack = getLanguagePack('de');
@@ -136,7 +137,25 @@ async function runTests() {
   const ptVerb = await ptPack.lookup('falamos');
   assert.ok(ptVerb, 'Portuguese "falamos" should resolve to "falar"');
   assert.equal(ptVerb.word, 'falar');
-  console.log('PASS: Morphological normalization & lookups across DE/FR/TR/NL/KO/PT');
+
+  const esPack = getLanguagePack('es');
+  const esText = 'Hoy leo un libro nuevo. Mañana hablamos español.';
+  const esTokens = await esPack.tokenize(esText);
+  for (const tok of esTokens) {
+    assert.equal(esText.slice(tok.startIndex, tok.endIndex), tok.surface);
+  }
+  const esBookTok = esTokens.find((t) => t.surface === 'libro');
+  assert.ok(esBookTok);
+  const esSentence = extractSentenceWithOffsets(esText, esBookTok.startIndex, esBookTok.endIndex);
+  assert.equal(esSentence?.sentence, 'Hoy leo un libro nuevo.');
+
+  const esVerb = await esPack.lookup('hablamos');
+  assert.ok(esVerb, 'Spanish "hablamos" should resolve to "hablar"');
+  assert.equal(esVerb.word, 'hablar');
+  const esNoun = await esPack.lookup('libros');
+  assert.ok(esNoun, 'Spanish "libros" should resolve to "libro"');
+  assert.equal(esNoun.word, 'libro');
+  console.log('PASS: Morphological normalization & lookups across DE/FR/TR/NL/KO/PT/ES');
 
   // 4. Mandarin Chinese pinyin-pro ruby segments & Anki FuriganaHTML export
   const zhPack = getLanguagePack('zh');
@@ -179,6 +198,7 @@ async function runTests() {
   assert.equal(formatAnkiTtsTag(dePack.ttsCode!, 'AudioText'), '{{tts de_DE:AudioText}}');
   assert.equal(formatAnkiTtsTag(koPack.ttsCode!, 'AudioText'), '{{tts ko_KR:AudioText}}');
   assert.equal(formatAnkiTtsTag(zhPack.ttsCode!, 'AudioText'), '{{tts zh_CN:AudioText}}');
+  assert.equal(formatAnkiTtsTag(esPack.ttsCode!, 'AudioText'), '{{tts es_ES:AudioText}}');
 
   const deTagSample = collectCardTags(
     {

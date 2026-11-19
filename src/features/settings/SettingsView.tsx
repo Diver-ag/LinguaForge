@@ -1705,7 +1705,7 @@ export const SettingsView: React.FC = () => {
                 <span>Developer Options</span>
               </h2>
               <p className="text-xs text-[var(--text-muted)]">
-                Reveals tokenizer diagnostics, pack sub-pack/source details, manifest URL overrides, and synthetic chart preview tools.
+                Reveals tokenizer diagnostics, pack sub-pack/source details, and synthetic chart preview tools.
               </p>
             </div>
 

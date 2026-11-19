@@ -335,6 +335,47 @@ const MandarinLanguagePack = createMultilingualLanguagePack({
   ],
 });
 
+const SpanishLanguagePack = createMultilingualLanguagePack({
+  id: 'es',
+  name: 'Spanish',
+  nativeName: 'Español',
+  flagEmoji: '🇪🇸',
+  description:
+    'Spanish language pack with CEFR A1-C2 vocabulary, verb/plural stemming, and offline starter lexicon.',
+  ocrCode: 'spa',
+  sttCode: 'es-ES',
+  ttsCode: 'es-ES',
+  levelSystem: CEFR_LEVEL_SYSTEM,
+  supportsRubyAnnotations: false,
+  sampleTestPhrase: '¡Buenos días! ¿Cómo estás hoy?',
+  packSizeBytes: 5033164,
+  packSizeFormatted: '4.8 MB',
+  packVersion: '1.0.0',
+  packTokenizerLabel: 'Intl.Segmenter (es) + Inflection Stemmer',
+  packSourceLabel: 'FreeDict / Wiktionary ES-EN + CEFR Index',
+  assetsManifest: [
+    {
+      id: 'es-dict-core',
+      name: 'Spanish Core Lexicon',
+      description: 'Spanish-English dictionary with verb conjugations, pronunciations, and CEFR tags.',
+      version: '1.0.0',
+      sizeBytes: 3984588,
+      sizeFormatted: '3.8 MB',
+      url: 'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/es/dictionary.json.gz',
+      isCoreBundle: true,
+    },
+    {
+      id: 'es-freq-cefr',
+      name: 'Spanish Frequency & CEFR Index',
+      description: 'Frequency bands and CEFR A1-C2 classifications.',
+      version: '1.0.0',
+      sizeBytes: 1048576,
+      sizeFormatted: '1.0 MB',
+      url: 'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/es/frequency.json.gz',
+    },
+  ],
+});
+
 const registry = new Map<string, LanguagePack>();
 
 registry.set(JapaneseLanguagePack.id, JapaneseLanguagePack);
@@ -346,6 +387,7 @@ registry.set(TurkishLanguagePack.id, TurkishLanguagePack);
 registry.set(DutchLanguagePack.id, DutchLanguagePack);
 registry.set(KoreanLanguagePack.id, KoreanLanguagePack);
 registry.set(MandarinLanguagePack.id, MandarinLanguagePack);
+registry.set(SpanishLanguagePack.id, SpanishLanguagePack);
 
 export function getLanguagePack(id: string): LanguagePack {
   const pack = registry.get(id);

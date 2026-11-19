@@ -340,6 +340,20 @@ function generateRomanceOrDutchCandidates(langId: string, word: string): string[
         out.add(`${stem}ire`);
       }
     }
+  } else if (langId === 'es') {
+    const sufs = [
+      'amos', 'emos', 'imos', 'ando', 'iendo', 'ado', 'ido', 'aba', 'ían',
+      'es', 'os', 'as', 'an', 'en', 'o', 'a', 'e', 's',
+    ];
+    for (const suf of sufs) {
+      if (lower.endsWith(suf) && lower.length - suf.length >= 2) {
+        const stem = lower.slice(0, -suf.length);
+        out.add(stem);
+        out.add(`${stem}ar`);
+        out.add(`${stem}er`);
+        out.add(`${stem}ir`);
+      }
+    }
   } else if (langId === 'pt') {
     if (lower.endsWith('ões') && lower.length > 4) {
       out.add(`${lower.slice(0, -3)}ão`);
@@ -466,7 +480,7 @@ export function generateLookupCandidates(langId: string, word: string, lemma?: s
 
     if (langId === 'de') {
       for (const c of generateGermanCandidates(clean)) candidates.add(c);
-    } else if (langId === 'fr' || langId === 'it' || langId === 'pt' || langId === 'nl') {
+    } else if (langId === 'es' || langId === 'fr' || langId === 'it' || langId === 'pt' || langId === 'nl') {
       for (const c of generateRomanceOrDutchCandidates(langId, clean)) candidates.add(c);
     } else if (langId === 'tr') {
       for (const c of generateTurkishCandidates(clean)) candidates.add(c);
