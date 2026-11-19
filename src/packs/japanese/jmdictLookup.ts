@@ -3,6 +3,33 @@ import type { DictionaryEntry } from '../../core/languagePack';
 import { JAPANESE_DICTIONARY_SAMPLE } from './dictionaryData';
 import { JAPANESE_KANJI_DATABASE } from './kanjiData';
 import { deriveFrequencyInfo } from './jmdictFrequency';
+import {
+  deinflectJapanese,
+  explainJapaneseInflection,
+  getJapaneseComponentMeaning,
+  PROTECTED_JA_GRAMMAR_TOKENS,
+  type ProtectedJaGrammarInfo,
+} from './deinflector';
+
+function buildProtectedGrammarEntry(
+  info: ProtectedJaGrammarInfo,
+  extraSample?: DictionaryEntry
+): DictionaryEntry {
+  return {
+    id: `ja-grammar-${info.word}`,
+    word: info.word,
+    readings: [info.reading],
+    meanings: info.meanings,
+    partsOfSpeech: [info.badgeLabel],
+    level: extraSample?.level || info.level,
+    frequencyRank: extraSample?.frequencyRank,
+    furiganaSegments: [{ text: info.word }],
+    examples: extraSample?.examples,
+    grammarNotes: extraSample?.grammarNotes || info.grammarNotes,
+    sourceKind: 'dictionary',
+    isSampleFallback: false,
+  };
+}
 
 function determineEntryKind(item: JmdictEntryItem): ImportKind {
   if (item.kinds && item.kinds.length > 0) {
@@ -33,8 +60,22 @@ function mapJmdictItemToEntry(
   const kind = determineEntryKind(item);
   const freqInfo = deriveFrequencyInfo(item.priorityTags || [], item.frequencyRank);
 
-  const isConjugated =
-    requestedLemma && requestedSurface !== requestedLemma && requestedLemma === item.primaryWord;
+  const prelimExplained =
+    requestedSurface && item.primaryWord !== requestedSurface
+      ? explainJapaneseInflection(requestedSurface, item.primaryWord)
+      : undefined;
+
+  const isConjugated = Boolean(
+    requestedSurface &&
+      item.primaryWord !== requestedSurface &&
+      ((requestedLemma && requestedLemma === item.primaryWord) ||
+        (prelimExplained && prelimExplained.reasons.length > 0) ||
+        deinflectJapanese(requestedSurface).some(
+          (c) => c.reasons.length > 0 && (c.lemma === item.primaryWord || readings.includes(c.lemma))
+        ))
+  );
+
+  const explained = isConjugated ? prelimExplained : undefined;
 
   return {
     id: `jmdict-${item.id}`,
@@ -51,6 +92,10 @@ function mapJmdictItemToEntry(
     sourceKind: kind,
     importIds: item.importIds,
     conjugatedForm: isConjugated ? requestedSurface : undefined,
+    inflectedSurface: isConjugated ? requestedSurface : undefined,
+    grammarSuffix: explained?.grammarSuffix,
+    grammarMeaning: explained?.grammarMeaning,
+    grammarSteps: explained?.grammarSteps?.length ? explained.grammarSteps : undefined,
   };
 }
 
@@ -58,7 +103,15 @@ export function lookupSampleDictionary(
   cleanWord: string,
   cleanLemma?: string
 ): DictionaryEntry | null {
+  const protectedInfo = PROTECTED_JA_GRAMMAR_TOKENS[cleanWord];
+  if (protectedInfo && (!cleanLemma || cleanLemma === cleanWord)) {
+    const sampleHit = JAPANESE_DICTIONARY_SAMPLE.find((e) => e.word === cleanWord);
+    return buildProtectedGrammarEntry(protectedInfo, sampleHit);
+  }
+
   let found: DictionaryEntry | null = null;
+  let matchedLemma = cleanLemma;
+
   if (cleanLemma) {
     found =
       JAPANESE_DICTIONARY_SAMPLE.find(
@@ -71,11 +124,38 @@ export function lookupSampleDictionary(
         (e) => e.word === cleanWord || e.readings.includes(cleanWord)
       ) || null;
   }
+  if (!found && cleanWord) {
+    const deinflected = deinflectJapanese(cleanWord);
+    for (const cand of deinflected) {
+      const hit = JAPANESE_DICTIONARY_SAMPLE.find(
+        (e) => e.word === cand.lemma || e.readings.includes(cand.lemma)
+      );
+      if (hit) {
+        found = hit;
+        matchedLemma = hit.word;
+        break;
+      }
+    }
+  }
   if (!found) {
     found =
       JAPANESE_DICTIONARY_SAMPLE.find(
         (e) => cleanWord.includes(e.word) || (cleanLemma && cleanLemma.includes(e.word))
       ) || null;
+  }
+  if (!found && cleanWord) {
+    const compGloss = getJapaneseComponentMeaning(cleanWord, cleanLemma);
+    if (compGloss) {
+      return {
+        id: `ja-particle-${cleanWord}`,
+        word: cleanWord,
+        readings: [cleanWord],
+        meanings: [compGloss],
+        partsOfSpeech: ['Particle / Auxiliary'],
+        sourceKind: 'dictionary',
+        isSampleFallback: true,
+      };
+    }
   }
   if (!found && cleanWord.length === 1 && JAPANESE_KANJI_DATABASE[cleanWord]) {
     const k = JAPANESE_KANJI_DATABASE[cleanWord];
@@ -95,13 +175,23 @@ export function lookupSampleDictionary(
 
   if (found) {
     const freqInfo = deriveFrequencyInfo(found.priorityTags || [], found.frequencyRank);
+    const isConjugated =
+      (matchedLemma && matchedLemma !== cleanWord && matchedLemma === found.word) ||
+      (found.word !== cleanWord && !found.readings.includes(cleanWord));
+    const explained = isConjugated
+      ? explainJapaneseInflection(cleanWord, found.word)
+      : undefined;
     return {
       ...found,
       sourceKind: 'dictionary',
       isSampleFallback: true,
       frequencyBand: found.frequencyBand || freqInfo.frequencyBand,
       priorityBadge: freqInfo.priorityBadge,
-      conjugatedForm: cleanLemma && cleanLemma !== cleanWord ? cleanWord : undefined,
+      conjugatedForm: isConjugated ? cleanWord : undefined,
+      inflectedSurface: isConjugated ? cleanWord : undefined,
+      grammarSuffix: explained?.grammarSuffix,
+      grammarMeaning: explained?.grammarMeaning,
+      grammarSteps: explained?.grammarSteps?.length ? explained.grammarSteps : undefined,
     };
   }
 
@@ -131,6 +221,25 @@ export async function lookupJmdict(
   const cleanSurface = surface.trim();
   const cleanLemma = lemma?.trim();
   const cleanReading = reading?.trim();
+
+  // Protect standalone 1–2 kana grammatical particles and copulas from false kanji homonyms
+  // (e.g. never map standalone "な" to 菜 "vegetables").
+  const protectedInfo = languageCode === 'ja' ? PROTECTED_JA_GRAMMAR_TOKENS[cleanSurface] : undefined;
+  if (protectedInfo && (!cleanLemma || cleanLemma === cleanSurface)) {
+    const sampleHit = JAPANESE_DICTIONARY_SAMPLE.find((e) => e.word === cleanSurface);
+    const primary = buildProtectedGrammarEntry(protectedInfo, sampleHit);
+    return {
+      primaryEntry: primary,
+      allEntries: [primary],
+      groupedResults: {
+        words: [primary],
+        names: [],
+        kanji: [],
+        examples: [],
+      },
+      isSampleFallback: false,
+    };
+  }
 
   // Check if imported dictionary/data exists for this language
   const hasImported = await hasImportedDictionary(languageCode);
@@ -187,6 +296,44 @@ export async function lookupJmdict(
     for (const item of lemmaMatches) {
       if ((!item.languageCode || item.languageCode === languageCode) && !matchesMap.has(item.id)) {
         matchesMap.set(item.id, { item, matchTier: 2 });
+      }
+    }
+  }
+
+  // 2b. Indexed packForms inflection-to-lemma search (O(1))
+  if (cleanSurface) {
+    try {
+      const formRow = await db.packForms.get([languageCode, cleanSurface.toLowerCase()]);
+      if (formRow && formRow.lemmas.length > 0) {
+        const formLemmaMatches = await db.jmdictEntries
+          .where('forms')
+          .anyOf(formRow.lemmas)
+          .toArray();
+        for (const item of formLemmaMatches) {
+          if ((!item.languageCode || item.languageCode === languageCode) && !matchesMap.has(item.id)) {
+            matchesMap.set(item.id, { item, matchTier: 2 });
+          }
+        }
+      }
+    } catch {
+      // Ignore if packForms not yet populated
+    }
+  }
+
+  // 2c. Backward-chaining rule-based Japanese deinflection search
+  if (matchesMap.size === 0 && cleanSurface) {
+    const deinfCandidates = deinflectJapanese(cleanSurface)
+      .filter((c) => c.reasons.length > 0)
+      .map((c) => c.lemma);
+    if (deinfCandidates.length > 0) {
+      const deinfMatches = await db.jmdictEntries
+        .where('forms')
+        .anyOf(Array.from(new Set(deinfCandidates)))
+        .toArray();
+      for (const item of deinfMatches) {
+        if ((!item.languageCode || item.languageCode === languageCode) && !matchesMap.has(item.id)) {
+          matchesMap.set(item.id, { item, matchTier: 2 });
+        }
       }
     }
   }
@@ -280,6 +427,20 @@ export async function lookupJmdict(
   const primary = groupedResults.words[0] || groupedResults.names[0] || allEntries[0] || null;
 
   if (primary) {
+    if (groupedResults.examples.length > 0) {
+      const mergedExamples = [...(primary.examples || [])];
+      const seenSentences = new Set(mergedExamples.map((e) => e.original));
+      for (const exEntry of groupedResults.examples) {
+        if (!exEntry.word || seenSentences.has(exEntry.word)) continue;
+        seenSentences.add(exEntry.word);
+        mergedExamples.push({
+          original: exEntry.word,
+          translation: exEntry.meanings?.[0] || '',
+          reading: exEntry.readings?.[0] || undefined,
+        });
+      }
+      primary.examples = mergedExamples;
+    }
     primary.allEntries = allEntries;
     primary.groupedResults = groupedResults;
   }

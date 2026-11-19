@@ -308,6 +308,25 @@ export interface InstalledLanguagePackRecord {
   manifestUrl?: string;
 }
 
+export interface PackFormItem {
+  languageCode: string;
+  form: string;
+  lemmas: string[];
+}
+
+export interface CustomPackAssetItem {
+  id: string;
+  languageId: string;
+  category: string;
+  title: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  data: Uint8Array | string;
+  columnMapping?: Record<string, number>;
+  createdAt: number;
+}
+
 export class LinguaForgeDatabase extends Dexie {
   documents!: Table<DocumentItem, number>;
   wordStatuses!: Table<WordStatusItem, number>;
@@ -326,6 +345,8 @@ export class LinguaForgeDatabase extends Dexie {
   imports!: Table<ImportRecord, string>;
   kanjiEntries!: Table<KanjiEntryItem, string>;
   installedPacks!: Table<InstalledLanguagePackRecord, string>;
+  packForms!: Table<PackFormItem, [string, string]>;
+  customPackAssets!: Table<CustomPackAssetItem, string>;
 
   constructor() {
     super('LinguaForgeDB');
@@ -571,6 +592,14 @@ export class LinguaForgeDatabase extends Dexie {
           });
         }
       });
+
+    this.version(14).stores({
+      packForms: '[languageCode+form], languageCode, form',
+    });
+
+    this.version(15).stores({
+      customPackAssets: 'id, languageId, category, createdAt',
+    });
   }
 }
 
@@ -828,7 +857,7 @@ export async function deleteJmdictInBatches(
     await deleteImportInBatches(imp.importId, onProgress);
   }
 
-  // Clear any remaining entries for this language
+  // Clear any remaining entries and inflection forms for this language
   const remainingKeys = await db.jmdictEntries
     .where('languageCode')
     .equals(packId)
@@ -836,6 +865,7 @@ export async function deleteJmdictInBatches(
   if (remainingKeys.length > 0) {
     await db.jmdictEntries.bulkDelete(remainingKeys);
   }
+  await db.packForms.where('languageCode').equals(packId).delete();
 
   await db.dictionaryMeta.delete(packId);
   onProgress?.(100, remainingKeys.length, remainingKeys.length);
@@ -899,7 +929,7 @@ export async function reindexEnglishGlosses(
 export async function clearAllLanguageData(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.jmdictEntries, db.dictionaryMeta, db.importedData, db.imports, db.downloadedAssets, db.installedPacks],
+    [db.jmdictEntries, db.dictionaryMeta, db.importedData, db.imports, db.downloadedAssets, db.installedPacks, db.packForms, db.kanjiEntries, db.settings],
     async () => {
       await db.jmdictEntries.clear();
       await db.dictionaryMeta.clear();
@@ -907,6 +937,9 @@ export async function clearAllLanguageData(): Promise<void> {
       await db.imports.clear();
       await db.downloadedAssets.clear();
       await db.installedPacks.clear();
+      await db.packForms.clear();
+      await db.kanjiEntries.clear();
+      await db.settings.delete('installedBundledPacksMap');
     }
   );
 

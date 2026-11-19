@@ -1,0 +1,165 @@
+{
+  "manifestVersion": "1.0",
+  "packs": [
+    {
+      "id": "default-ja-core-dict",
+      "languageId": "ja",
+      "category": "core-dict",
+      "title": "Japanese Core Dictionary (v2.1)",
+      "description": "Core Japanese-English dictionary & inflection forms.",
+      "sourceType": "cloud-v2",
+      "url": "https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@v2.1/packs/ja.json.gz",
+      "fileFormat": "v2"
+    },
+    {
+      "id": "default-ja-kanji-levels",
+      "languageId": "ja",
+      "category": "kanji-levels",
+      "title": "Kanji & JLPT Levels Starter",
+      "description": "JLPT N5-N1 kanji characters with readings, meanings, and stroke counts.",
+      "sourceType": "public-file",
+      "url": "/packs/ja-kanji-levels.csv",
+      "fileFormat": "csv"
+    },
+    {
+      "id": "default-ja-examples",
+      "languageId": "ja",
+      "category": "examples",
+      "title": "Japanese Example Sentences",
+      "description": "Contextual Japanese-English sentence pairs linked to core vocabulary.",
+      "sourceType": "public-file",
+      "url": "/packs/ja-examples.csv",
+      "fileFormat": "csv"
+    },
+    {
+      "id": "default-ja-frequency",
+      "languageId": "ja",
+      "category": "frequency",
+      "title": "Japanese Frequency Ranks",
+      "description": "Word frequency ranks and bands for core Japanese vocabulary.",
+      "sourceType": "public-file",
+      "url": "/packs/ja-frequency.csv",
+      "fileFormat": "csv"
+    },
+    {
+      "id": "default-es-core-dict",
+      "languageId": "es",
+      "category": "core-dict",
+      "title": "Spanish Core Dictionary (v2.1)",
+      "description": "Spanish-English dictionary & verb inflection forms.",
+      "sourceType": "cloud-v2",
+      "url": "https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@v2.1/packs/es.json.gz",
+      "fileFormat": "v2"
+    },
+    {
+      "id": "default-es-examples",
+      "languageId": "es",
+      "category": "examples",
+      "title": "Spanish Example Sentences",
+      "description": "Contextual Spanish-English example sentence pairs.",
+      "sourceType": "public-file",
+      "url": "/packs/es-examples.csv",
+      "fileFormat": "csv"
+    },
+    {
+      "id": "default-de-core-dict",
+      "languageId": "de",
+      "category": "core-dict",
+      "title": "German Core Dictionary (v2.1)",
+      "description": "German-English dictionary & inflection forms.",
+      "sourceType": "cloud-v2",
+      "url": "https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@v2.1/packs/de.json.gz",
+      "fileFormat": "v2"
+    },
+    {
+      "id": "default-de-examples",
+      "languageId": "de",
+      "category": "examples",
+      "title": "German Example Sentences",
+      "description": "Contextual German-English example sentence pairs.",
+      "sourceType": "public-file",
+      "url": "/packs/de-examples.csv",
+      "fileFormat": "csv"
+    },
+    {
+      "id": "default-fr-core-dict",
+      "languageId": "fr",
+      "category": "core-dict",
+      "title": "French Core Dictionary (v2.1)",
+      "description": "French-English dictionary & inflection forms.",
+      "sourceType": "cloud-v2",
+      "url": "https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@v2.1/packs/fr.json.gz",
+      "fileFormat": "v2"
+    },
+    {
+      "id": "default-fr-examples",
+      "languageId": "fr",
+      "category": "examples",
+      "title": "French Example Sentences",
+      "description": "Contextual French-English example sentence pairs.",
+      "sourceType": "public-file",
+      "url": "/packs/fr-examples.csv",
+      "fileFormat": "csv"
+    },
+    {
+      "id": "default-it-core-dict",
+      "languageId": "it",
+      "category": "core-dict",
+      "title": "Italian Core Dictionary (v2.1)",
+      "description": "Italian-English dictionary & inflection forms.",
+      "sourceType": "cloud-v2",
+      "url": "https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@v2.1/packs/it.json.gz",
+      "fileFormat": "v2"
+    },
+    {
+      "id": "default-pt-core-dict",
+      "languageId": "pt",
+      "category": "core-dict",
+      "title": "Portuguese Core Dictionary (v2.1)",
+      "description": "Portuguese-English dictionary & inflection forms.",
+      "sourceType": "cloud-v2",
+      "url": "https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@v2.1/packs/pt.json.gz",
+      "fileFormat": "v2"
+    },
+    {
+      "id": "default-tr-core-dict",
+      "languageId": "tr",
+      "category": "core-dict",
+      "title": "Turkish Core Dictionary (v2.1)",
+      "description": "Turkish-English dictionary & inflection forms.",
+      "sourceType": "cloud-v2",
+      "url": "https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@v2.1/packs/tr.json.gz",
+      "fileFormat": "v2"
+    },
+    {
+      "id": "default-nl-core-dict",
+      "languageId": "nl",
+      "category": "core-dict",
+      "title": "Dutch Core Dictionary (v2.1)",
+      "description": "Dutch-English dictionary & inflection forms.",
+      "sourceType": "cloud-v2",
+      "url": "https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@v2.1/packs/nl.json.gz",
+      "fileFormat": "v2"
+    },
+    {
+      "id": "default-ko-core-dict",
+      "languageId": "ko",
+      "category": "core-dict",
+      "title": "Korean Core Dictionary (v2.1)",
+      "description": "Korean-English dictionary & inflection forms.",
+      "sourceType": "cloud-v2",
+      "url": "https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@v2.1/packs/ko.json.gz",
+      "fileFormat": "v2"
+    },
+    {
+      "id": "default-zh-core-dict",
+      "languageId": "zh",
+      "category": "core-dict",
+      "title": "Mandarin Core Dictionary (v2.1)",
+      "description": "Mandarin CC-CEDICT dictionary & tone-marked Pinyin.",
+      "sourceType": "cloud-v2",
+      "url": "https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@v2.1/packs/zh.json.gz",
+      "fileFormat": "v2"
+    }
+  ]
+}

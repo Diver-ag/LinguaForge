@@ -11,11 +11,13 @@ import { getAllLanguagePacks, getLanguagePack } from '../packs/registry';
 import { STARTER_LEXICONS, type StarterLexiconEntry } from '../packs/starterData';
 import { JAPANESE_DICTIONARY_SAMPLE } from '../packs/japanese/dictionaryData';
 import { deriveFrequencyInfo } from '../packs/japanese/jmdictFrequency';
-import { buildMandarinPinyinSegments } from '../packs/multilingualPack';
+import { buildMandarinPinyinSegments, invalidateMandarinLexiconCache } from '../packs/multilingualPack';
 import { mapFrequencyRankToLevel } from './languagePack';
 import { logEvent } from './eventLogger';
 
 export const DEFAULT_PACK_MANIFEST_URL =
+  'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@v2.1/packs/manifest.json';
+const LEGACY_DEFAULT_MANIFEST_URL =
   'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/manifest.json';
 export const PACK_MANIFEST_URL_KEY = 'packManifestUrl';
 const INSTALLED_PACKS_SEEDED_KEY = 'installedPacksSeededV1';
@@ -82,7 +84,11 @@ export async function getPackManifestUrl(): Promise<string> {
   try {
     const row = await db.settings.get(PACK_MANIFEST_URL_KEY);
     if (row && typeof row.value === 'string' && row.value.trim()) {
-      return row.value.trim();
+      const val = row.value.trim();
+      if (val === LEGACY_DEFAULT_MANIFEST_URL) {
+        return DEFAULT_PACK_MANIFEST_URL;
+      }
+      return val;
     }
   } catch {
     // Ignore DB errors
@@ -276,7 +282,7 @@ export function normalizeRawPackItem(
   };
 }
 
-function normalizeEntriesToJmdictItems(
+export function normalizeEntriesToJmdictItems(
   languageId: string,
   importId: string,
   entries: RawPackEntryInput[],
@@ -374,8 +380,48 @@ export async function decompressGzipBytesToText(bytes: Uint8Array): Promise<stri
   return await new Response(stream).text();
 }
 
-export function extractRawPackEntriesFromParsedJson(parsed: unknown): RawPackEntryInput[] {
+export interface ExtractedPackData {
+  entries: RawPackEntryInput[];
+  forms: Record<string, string[]>;
+}
+
+function normalizeFormsMap(rawForms: unknown): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  if (!rawForms || typeof rawForms !== 'object' || Array.isArray(rawForms)) {
+    return out;
+  }
+
+  for (const [rawKey, rawVal] of Object.entries(rawForms as Record<string, unknown>)) {
+    const formKey = rawKey.trim().toLowerCase();
+    if (!formKey) continue;
+
+    const lemmaList = Array.isArray(rawVal)
+      ? rawVal.map((v) => String(v).trim()).filter(Boolean)
+      : typeof rawVal === 'string'
+      ? rawVal
+          .split(/[;|]/)
+          .map((v) => v.trim())
+          .filter(Boolean)
+      : [];
+
+    if (lemmaList.length === 0) continue;
+    if (!out[formKey]) {
+      out[formKey] = [];
+    }
+    for (const l of lemmaList) {
+      if (!out[formKey].includes(l)) {
+        out[formKey].push(l);
+      }
+    }
+  }
+
+  return out;
+}
+
+export function extractRawPackDataFromParsedJson(parsed: unknown): ExtractedPackData {
   let rawArray: unknown[] | null = null;
+  let forms: Record<string, string[]> = {};
+
   if (Array.isArray(parsed)) {
     rawArray = parsed;
   } else if (parsed && typeof parsed === 'object') {
@@ -386,6 +432,9 @@ export function extractRawPackEntriesFromParsedJson(parsed: unknown): RawPackEnt
       rawArray = obj.words;
     } else if (Array.isArray(obj.items)) {
       rawArray = obj.items;
+    }
+    if (obj.forms && typeof obj.forms === 'object') {
+      forms = normalizeFormsMap(obj.forms);
     }
   }
 
@@ -398,7 +447,32 @@ export function extractRawPackEntriesFromParsedJson(parsed: unknown): RawPackEnt
     const normalized = normalizeRawPackItem(item);
     if (normalized) out.push(normalized);
   }
-  return out;
+  return { entries: out, forms };
+}
+
+export function extractRawPackEntriesFromParsedJson(parsed: unknown): RawPackEntryInput[] {
+  return extractRawPackDataFromParsedJson(parsed).entries;
+}
+
+export async function storePackFormsInBatches(
+  languageId: string,
+  formsMap: Record<string, string[]>,
+  signal?: AbortSignal
+): Promise<void> {
+  const entries = Object.entries(formsMap);
+  if (entries.length === 0) return;
+
+  const rows = entries.map(([form, lemmas]) => ({
+    languageCode: languageId,
+    form,
+    lemmas,
+  }));
+
+  const BATCH_SIZE = 3000;
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    throwIfAborted(signal);
+    await db.packForms.bulkPut(rows.slice(i, i + BATCH_SIZE));
+  }
 }
 
 async function streamAndParseCloudBundle(
@@ -406,7 +480,7 @@ async function streamAndParseCloudBundle(
   expectedTotalBytes?: number,
   signal?: AbortSignal,
   onProgress?: (p: PackInstallProgress) => void
-): Promise<RawPackEntryInput[]> {
+): Promise<ExtractedPackData> {
   const res = await fetch(bundleUrl, { signal });
   if (!res.ok) {
     throw new Error(`HTTP ${res.status} while downloading pack bundle`);
@@ -473,7 +547,7 @@ async function streamAndParseCloudBundle(
 
   throwIfAborted(signal);
   const parsed = JSON.parse(jsonText);
-  return extractRawPackEntriesFromParsedJson(parsed);
+  return extractRawPackDataFromParsedJson(parsed);
 }
 
 function getBundledStarterInput(languageId: string): RawPackEntryInput[] {
@@ -519,6 +593,7 @@ export async function installLanguagePack(
   onProgress?.({ percent: 5, stage: `Preparing ${pack.name} pack...` });
 
   let rawEntries: RawPackEntryInput[] = [];
+  let rawForms: Record<string, string[]> = {};
   let resolvedSource: 'starter' | 'cloud' | 'bundled' = 'starter';
   let resolvedVersion = pack.packVersion || '1.0.0';
   let resolvedSizeBytes = pack.packSizeBytes || 0;
@@ -544,12 +619,14 @@ export async function installLanguagePack(
       const manifestEntry = manifest?.packs?.[languageId];
       const resolvedUrl = resolveManifestPackUrl(manifestEntry, manifestUrl);
       if (resolvedUrl) {
-        rawEntries = await streamAndParseCloudBundle(
+        const bundleData = await streamAndParseCloudBundle(
           resolvedUrl,
           manifestEntry?.sizeBytes,
           signal,
           onProgress
         );
+        rawEntries = bundleData.entries;
+        rawForms = bundleData.forms;
         resolvedSource = 'cloud';
         resolvedVersion = manifestEntry?.version || resolvedVersion;
         resolvedSizeBytes = manifestEntry?.sizeBytes || resolvedSizeBytes;
@@ -605,9 +682,15 @@ export async function installLanguagePack(
     await db.jmdictEntries.bulkPut(slice);
     const ratio = (i + slice.length) / Math.max(1, normalizedRows.length);
     onProgress?.({
-      percent: Math.min(97, 80 + Math.round(ratio * 17)),
+      percent: Math.min(94, 80 + Math.round(ratio * 14)),
       stage: `Storing offline dictionary (${Math.min(i + slice.length, normalizedRows.length).toLocaleString()} / ${normalizedRows.length.toLocaleString()})...`,
     });
+  }
+
+  if (Object.keys(rawForms).length > 0) {
+    onProgress?.({ percent: 96, stage: 'Indexing inflection forms...' });
+    await db.packForms.where('languageCode').equals(languageId).delete();
+    await storePackFormsInBatches(languageId, rawForms, signal);
   }
 
   // Record metadata without touching flashcards, decks, lookups, or documents
@@ -632,6 +715,9 @@ export async function installLanguagePack(
 
   throwIfAborted(signal);
   await ensureDefaultDeck(languageId);
+  if (languageId === 'zh') {
+    invalidateMandarinLexiconCache();
+  }
 
   const totalDbCount = await db.jmdictEntries.where('languageCode').equals(languageId).count();
   const installedRecord: InstalledLanguagePackRecord = {
@@ -685,7 +771,24 @@ export async function removeLanguagePack(
   });
 
   await db.settings.put({ key: INSTALLED_PACKS_SEEDED_KEY, value: true });
+  try {
+    const bundleStatusRow = await db.settings.get('installedBundledPacksMap');
+    if (bundleStatusRow?.value && typeof bundleStatusRow.value === 'object') {
+      const nextMap: Record<string, any> = {};
+      for (const [k, v] of Object.entries(bundleStatusRow.value)) {
+        if ((v as any)?.languageId !== languageId) {
+          nextMap[k] = v;
+        }
+      }
+      await db.settings.put({ key: 'installedBundledPacksMap', value: nextMap });
+    }
+  } catch {
+    // Ignore DB errors
+  }
 
+  if (languageId === 'zh') {
+    invalidateMandarinLexiconCache();
+  }
   if (languageId === 'ja' && typeof caches !== 'undefined') {
     try {
       await caches.delete('kuromoji-dict-v1');
@@ -758,23 +861,25 @@ export async function importCustomLanguageJsonOrCsv(
   }
 
   const parsedEntries: RawPackEntryInput[] = [];
+  let parsedForms: Record<string, string[]> = {};
 
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
     const data = JSON.parse(trimmed);
-    const list: any[] = Array.isArray(data)
-      ? data
-      : Array.isArray(data.entries)
-      ? data.entries
-      : Object.entries(data).map(([word, val]: [string, any]) =>
-          typeof val === 'object' && val !== null
-            ? { word, ...val }
-            : { word, meanings: [String(val)] }
-        );
-
-    for (const item of list) {
-      const normalizedItem = normalizeRawPackItem(item, kind);
-      if (normalizedItem) {
-        parsedEntries.push(normalizedItem);
+    if (Array.isArray(data) || Array.isArray(data?.entries) || Array.isArray(data?.words) || Array.isArray(data?.items)) {
+      const extracted = extractRawPackDataFromParsedJson(data);
+      parsedEntries.push(...extracted.entries);
+      parsedForms = extracted.forms;
+    } else {
+      const list: any[] = Object.entries(data).map(([word, val]: [string, any]) =>
+        typeof val === 'object' && val !== null
+          ? { word, ...val }
+          : { word, meanings: [String(val)] }
+      );
+      for (const item of list) {
+        const normalizedItem = normalizeRawPackItem(item, kind);
+        if (normalizedItem) {
+          parsedEntries.push(normalizedItem);
+        }
       }
     }
   } else {
@@ -852,6 +957,12 @@ export async function importCustomLanguageJsonOrCsv(
   const BATCH_SIZE = 2000;
   for (let i = 0; i < normalized.length; i += BATCH_SIZE) {
     await db.jmdictEntries.bulkPut(normalized.slice(i, i + BATCH_SIZE));
+  }
+  if (Object.keys(parsedForms).length > 0) {
+    await storePackFormsInBatches(languageId, parsedForms);
+  }
+  if (languageId === 'zh') {
+    invalidateMandarinLexiconCache();
   }
 
   const totalCount = await db.jmdictEntries.where('languageCode').equals(languageId).count();

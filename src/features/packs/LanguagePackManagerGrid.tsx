@@ -18,6 +18,18 @@ import {
   type PackInstallProgress,
 } from '../../core/packManager';
 import {
+  BUNDLED_PACK_CATEGORY_LABELS,
+  getEffectiveBundledPacks,
+  getInstalledBundledPacksMap,
+  installAllAvailableLanguagePacks,
+  installAllIncludedPacksForLanguage,
+  type AllLanguagesBundleInstallProgress,
+  type BundledPackDefinition,
+  type InstalledBundledPackStatus,
+  type LanguageBundleInstallProgress,
+} from '../../core/bundledPacks';
+import { DeveloperPackRegistryPanel } from './DeveloperPackRegistryPanel';
+import {
   CheckCircle2,
   DownloadCloud,
   Trash2,
@@ -31,6 +43,7 @@ import {
   ArrowLeftRight,
   Plus,
   Minus,
+  Layers,
 } from 'lucide-react';
 
 export interface LanguagePackManagerGridProps {
@@ -38,6 +51,14 @@ export interface LanguagePackManagerGridProps {
   onPacksChanged?: () => void;
   compact?: boolean;
 }
+
+const SHORT_CATEGORY_NAMES: Record<string, string> = {
+  'core-dict': 'Core Dict',
+  'common-dict': 'Common Dict',
+  'kanji-levels': 'Kanji Levels',
+  examples: 'Examples',
+  frequency: 'Frequency',
+};
 
 export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = ({
   developerMode,
@@ -49,15 +70,30 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
 
   const [installedMap, setInstalledMap] = useState<Record<string, InstalledLanguagePackRecord>>({});
   const [downloadedAssetsMap, setDownloadedAssetsMap] = useState<Record<string, DownloadedPackAsset[]>>({});
+  const [bundledPacks, setBundledPacks] = useState<BundledPackDefinition[]>([]);
+  const [removedDefaultIds, setRemovedDefaultIds] = useState<string[]>([]);
+  const [installedBundlesMap, setInstalledBundlesMap] = useState<
+    Record<string, InstalledBundledPackStatus>
+  >({});
   const [isLoading, setIsLoading] = useState(true);
   const [manifestData, setManifestData] = useState<CloudPackManifest | null>(null);
 
-  // Per-pack download progress, abort controllers, errors, confirmations
+  // Per-pack download / bundle progress, abort controllers, errors, confirmations
   const [progressByLang, setProgressByLang] = useState<Record<string, PackInstallProgress | null>>({});
+  const [bundleProgressByLang, setBundleProgressByLang] = useState<
+    Record<string, LanguageBundleInstallProgress | null>
+  >({});
   const [errorByLang, setErrorByLang] = useState<Record<string, string | null>>({});
   const [confirmRemoveLang, setConfirmRemoveLang] = useState<string | null>(null);
   const [removingLang, setRemovingLang] = useState<string | null>(null);
   const abortControllersRef = useRef<Record<string, AbortController>>({});
+
+  // Global "Install All Available Language Packs" state
+  const [batchAllProgress, setBatchAllProgress] =
+    useState<AllLanguagesBundleInstallProgress | null>(null);
+  const [batchAllError, setBatchAllError] = useState<string | null>(null);
+  const [batchAllNotice, setBatchAllNotice] = useState<string | null>(null);
+  const batchAllAbortRef = useRef<AbortController | null>(null);
 
   // Developer drawer state
   const [expandedDevLang, setExpandedDevLang] = useState<Record<string, boolean>>({});
@@ -67,11 +103,16 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
   const loadPackStates = useCallback(
     async (fetchRemoteManifest = false) => {
       try {
-        const [map, allAssets] = await Promise.all([
+        const [map, allAssets, effectiveBundle, installedBundles] = await Promise.all([
           getInstalledPacksMap(),
           db.downloadedAssets.toArray().catch(() => [] as DownloadedPackAsset[]),
+          getEffectiveBundledPacks({ skipRemoteManifest: !fetchRemoteManifest }),
+          getInstalledBundledPacksMap(),
         ]);
         setInstalledMap(map);
+        setBundledPacks(effectiveBundle.packs);
+        setRemovedDefaultIds(effectiveBundle.removedDefaultIds);
+        setInstalledBundlesMap(installedBundles);
 
         const groupedAssets: Record<string, DownloadedPackAsset[]> = {};
         for (const a of allAssets) {
@@ -105,6 +146,7 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
     loadPackStates(true);
     return () => {
       Object.values(abortControllersRef.current).forEach((ctrl) => ctrl.abort());
+      batchAllAbortRef.current?.abort();
     };
   }, [loadPackStates]);
 
@@ -153,6 +195,123 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
     }
   };
 
+  const handleInstallLanguageBundle = async (
+    langId: string,
+    mode: 'auto' | 'cloud-strict' | 'starter' = 'auto'
+  ) => {
+    const existingCtrl = abortControllersRef.current[langId];
+    if (existingCtrl) existingCtrl.abort();
+
+    const controller = new AbortController();
+    abortControllersRef.current[langId] = controller;
+
+    const langBundles = bundledPacks.filter((p) => p.languageId === langId);
+    const firstPack = langBundles[0];
+    setErrorByLang((prev) => ({ ...prev, [langId]: null }));
+    if (firstPack) {
+      setBundleProgressByLang((prev) => ({
+        ...prev,
+        [langId]: {
+          languageId: langId,
+          currentIndex: 1,
+          totalCount: langBundles.length,
+          currentPack: firstPack,
+          percent: 4,
+          stage: `Installing 1 of ${langBundles.length}: ${firstPack.title}...`,
+        },
+      }));
+    }
+
+    try {
+      await installAllIncludedPacksForLanguage(langId, {
+        signal: controller.signal,
+        mode,
+        onProgress: (prog) => {
+          setBundleProgressByLang((prev) => ({ ...prev, [langId]: prog }));
+        },
+      });
+
+      await refreshInstalledLanguages();
+      await loadPackStates(false);
+      onPacksChanged?.();
+      setBundleProgressByLang((prev) => ({ ...prev, [langId]: null }));
+    } catch (err: any) {
+      setBundleProgressByLang((prev) => ({ ...prev, [langId]: null }));
+      if (!isAbortError(err)) {
+        setErrorByLang((prev) => ({
+          ...prev,
+          [langId]: err?.message || 'Bundle installation failed. Please retry.',
+        }));
+      }
+    } finally {
+      delete abortControllersRef.current[langId];
+    }
+  };
+
+  const handleInstallAllAvailableLanguages = async () => {
+    if (batchAllAbortRef.current) batchAllAbortRef.current.abort();
+    const controller = new AbortController();
+    batchAllAbortRef.current = controller;
+
+    setBatchAllError(null);
+    setBatchAllNotice(null);
+
+    const firstLangPack = allPacks.find((p) =>
+      bundledPacks.some((bp) => bp.languageId === p.id)
+    );
+    const firstBundle = firstLangPack
+      ? bundledPacks.find((bp) => bp.languageId === firstLangPack.id)
+      : undefined;
+
+    if (firstLangPack && firstBundle) {
+      setBatchAllProgress({
+        languageIndex: 1,
+        totalLanguages: allPacks.length,
+        currentLanguageId: firstLangPack.id,
+        languageProgress: {
+          languageId: firstLangPack.id,
+          currentIndex: 1,
+          totalCount: 1,
+          currentPack: firstBundle,
+          percent: 3,
+          stage: `Installing 1 of 1: ${firstBundle.title}...`,
+        },
+        overallPercent: 3,
+        stage: `[1/${allPacks.length} ${firstLangPack.name}] Installing ${firstBundle.title}...`,
+      });
+    }
+
+    try {
+      const res = await installAllAvailableLanguagePacks({
+        signal: controller.signal,
+        mode: 'auto',
+        onProgress: (prog) => {
+          setBatchAllProgress(prog);
+        },
+      });
+      await refreshInstalledLanguages();
+      await loadPackStates(false);
+      onPacksChanged?.();
+      setBatchAllProgress(null);
+      setBatchAllNotice(
+        `Installed ${res.totalPacksInstalled} packs across ${res.languagesInstalled.length} languages (${res.totalEntries.toLocaleString()} entries).`
+      );
+    } catch (err: any) {
+      setBatchAllProgress(null);
+      if (!isAbortError(err)) {
+        setBatchAllError(err?.message || 'Batch installation failed. Please retry.');
+      }
+    } finally {
+      batchAllAbortRef.current = null;
+    }
+  };
+
+  const handleCancelBatchAll = () => {
+    batchAllAbortRef.current?.abort();
+    batchAllAbortRef.current = null;
+    setBatchAllProgress(null);
+  };
+
   const handleCancelDownload = (langId: string) => {
     const ctrl = abortControllersRef.current[langId];
     if (ctrl) {
@@ -160,6 +319,7 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
       delete abortControllersRef.current[langId];
     }
     setProgressByLang((prev) => ({ ...prev, [langId]: null }));
+    setBundleProgressByLang((prev) => ({ ...prev, [langId]: null }));
   };
 
   const handleRemovePack = async (langId: string) => {
@@ -240,8 +400,102 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
     }));
   };
 
+  const installedLangCount = Object.keys(installedMap).length;
+  const anyLanguageBusy =
+    Boolean(batchAllProgress) ||
+    Object.values(progressByLang).some(Boolean) ||
+    Object.values(bundleProgressByLang).some(Boolean);
+
   return (
     <div className="space-y-4">
+      {/* Top-Level One-Click Bundle Action Bar */}
+      {!isLoading && (
+        <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-muted)]/45 p-3.5 space-y-2.5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="text-xs text-[var(--text-secondary)] tabular-nums">
+              <span className="font-bold text-[var(--text)]">
+                {installedLangCount} / {allPacks.length} languages installed
+              </span>{' '}
+              <span aria-hidden="true">·</span>{' '}
+              <span>{bundledPacks.length} included packs ready</span>
+            </div>
+
+            {batchAllProgress ? (
+              <button
+                type="button"
+                onClick={handleCancelBatchAll}
+                className="min-h-[38px] px-3.5 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] hover:bg-[var(--border)] text-xs font-bold text-[var(--text)] inline-flex items-center justify-center gap-1.5 shrink-0 transition"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>Cancel Batch Install</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleInstallAllAvailableLanguages}
+                disabled={anyLanguageBusy || bundledPacks.length === 0}
+                data-testid="install-all-languages-btn"
+                className="min-h-[38px] px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 shadow-xs shrink-0 transition active:scale-[0.99]"
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>Install All Available Language Packs</span>
+              </button>
+            )}
+          </div>
+
+          {batchAllProgress && (
+            <div className="space-y-1 pt-0.5">
+              <div className="w-full h-1.5 rounded-full bg-[var(--surface)] overflow-hidden">
+                <div
+                  className="h-full bg-indigo-600 transition-all duration-150"
+                  style={{ width: `${Math.max(4, Math.min(100, batchAllProgress.overallPercent))}%` }}
+                />
+              </div>
+              <div className="flex items-center justify-between text-[11px] text-[var(--text-muted)] gap-2">
+                <span className="truncate">{batchAllProgress.stage}</span>
+                <span className="font-mono tabular-nums shrink-0">
+                  {batchAllProgress.overallPercent}%
+                </span>
+              </div>
+            </div>
+          )}
+
+          {batchAllNotice && (
+            <div className="flex items-center justify-between gap-2 text-[11px] text-emerald-700 dark:text-emerald-300 font-medium">
+              <span className="inline-flex items-center gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                {batchAllNotice}
+              </span>
+              <button
+                type="button"
+                onClick={() => setBatchAllNotice(null)}
+                className="text-[var(--text-muted)] hover:text-[var(--text)]"
+                aria-label="Dismiss notification"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {batchAllError && (
+            <div className="flex items-center justify-between gap-2 text-[11px] text-rose-700 dark:text-rose-300 font-medium">
+              <span className="inline-flex items-center gap-1.5">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                {batchAllError}
+              </span>
+              <button
+                type="button"
+                onClick={() => setBatchAllError(null)}
+                className="text-[var(--text-muted)] hover:text-[var(--text)]"
+                aria-label="Dismiss error"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Clean Language Grid */}
       {isLoading ? (
         <div className="py-10 flex items-center justify-center gap-2 text-xs text-[var(--text-muted)]">
@@ -260,11 +514,25 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
             const manifestItem = manifestData?.packs?.[pack.id];
             const updateAvailable = checkPackUpdateAvailable(installed, manifestItem?.version);
             const isActive = activeLanguageId === pack.id;
-            const progress = progressByLang[pack.id];
+            const singleProgress = progressByLang[pack.id];
+            const bundleProgress = bundleProgressByLang[pack.id];
+            const activeProgress = bundleProgress
+              ? { percent: bundleProgress.percent, stage: bundleProgress.stage }
+              : singleProgress;
             const errorMsg = errorByLang[pack.id];
             const isConfirmingRemove = confirmRemoveLang === pack.id;
             const isRemoving = removingLang === pack.id;
             const devOpen = Boolean(expandedDevLang[pack.id]);
+
+            const langBundledPacks = bundledPacks.filter((bp) => bp.languageId === pack.id);
+            const installedSubCount = langBundledPacks.filter((bp) =>
+              Boolean(installedBundlesMap[bp.id])
+            ).length;
+            const uninstalledSubCount = langBundledPacks.length - installedSubCount;
+            const categorySummary = langBundledPacks
+              .map((bp) => SHORT_CATEGORY_NAMES[bp.category] || BUNDLED_PACK_CATEGORY_LABELS[bp.category])
+              .filter((v, idx, arr) => arr.indexOf(v) === idx)
+              .join(', ');
 
             const byteSize = manifestItem?.sizeBytes ?? installed?.sizeBytes ?? pack.packSizeBytes;
             const displaySize =
@@ -272,8 +540,8 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
                 ? formatPackBytes(byteSize)
                 : pack.packSizeFormatted || '5.0 MB';
 
-            const statusText = progress
-              ? `Downloading · ${progress.percent}%`
+            const statusText = activeProgress
+              ? `Installing · ${activeProgress.percent}%`
               : updateAvailable
               ? 'Update Available'
               : isInstalled
@@ -324,7 +592,7 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
                   <div className="flex items-center gap-1.5 text-xs tabular-nums">
                     <span
                       className={`inline-flex items-center gap-1 font-semibold ${
-                        progress
+                        activeProgress
                           ? 'text-indigo-600 dark:text-indigo-400'
                           : updateAvailable
                           ? 'text-amber-600 dark:text-amber-400'
@@ -333,7 +601,7 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
                           : 'text-[var(--text-muted)]'
                       }`}
                     >
-                      {isInstalled && !progress && !updateAvailable && (
+                      {isInstalled && !activeProgress && !updateAvailable && (
                         <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
                       )}
                       <span>{statusText}</span>
@@ -344,18 +612,37 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
                     <span className="text-[var(--text-muted)]">{displaySize}</span>
                   </div>
 
-                  {/* Streaming Download Progress Bar */}
-                  {progress && (
+                  {/* Clean Included Packs Summary */}
+                  <div className="text-[11px] text-[var(--text-muted)] tabular-nums leading-snug">
+                    {langBundledPacks.length > 0 ? (
+                      <span>
+                        <span className="font-semibold text-[var(--text-secondary)]">
+                          {langBundledPacks.length} included{' '}
+                          {langBundledPacks.length === 1 ? 'pack' : 'packs'}:
+                        </span>{' '}
+                        {categorySummary}
+                      </span>
+                    ) : (
+                      <span>No included packs configured</span>
+                    )}
+                  </div>
+
+                  {/* Unified Streaming / Sequential Bundle Progress Bar */}
+                  {activeProgress && (
                     <div className="space-y-1 pt-1">
                       <div className="w-full h-1.5 rounded-full bg-[var(--surface-muted)] overflow-hidden">
                         <div
                           className="h-full bg-indigo-600 transition-all duration-150"
-                          style={{ width: `${Math.max(4, Math.min(100, progress.percent))}%` }}
+                          style={{
+                            width: `${Math.max(4, Math.min(100, activeProgress.percent))}%`,
+                          }}
                         />
                       </div>
                       <div className="flex items-center justify-between text-[11px] text-[var(--text-muted)] gap-2">
-                        <span className="truncate">{progress.stage}</span>
-                        <span className="font-mono tabular-nums shrink-0">{progress.percent}%</span>
+                        <span className="truncate">{activeProgress.stage}</span>
+                        <span className="font-mono tabular-nums shrink-0">
+                          {activeProgress.percent}%
+                        </span>
                       </div>
                     </div>
                   )}
@@ -370,14 +657,22 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
                       <div className="flex items-center gap-3 font-bold">
                         <button
                           type="button"
-                          onClick={() => handleDownloadOrUpdate(pack.id, 'cloud-strict')}
+                          onClick={() =>
+                            langBundledPacks.length > 0
+                              ? handleInstallLanguageBundle(pack.id, 'auto')
+                              : handleDownloadOrUpdate(pack.id, 'cloud-strict')
+                          }
                           className="underline"
                         >
                           Retry
                         </button>
                         <button
                           type="button"
-                          onClick={() => handleDownloadOrUpdate(pack.id, 'starter')}
+                          onClick={() =>
+                            langBundledPacks.length > 0
+                              ? handleInstallLanguageBundle(pack.id, 'starter')
+                              : handleDownloadOrUpdate(pack.id, 'starter')
+                          }
                           className="underline text-rose-800 dark:text-rose-200"
                         >
                           Use Offline Starter
@@ -389,7 +684,7 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
 
                 {/* Primary Action Row */}
                 <div className="space-y-2">
-                  {progress ? (
+                  {activeProgress ? (
                     <button
                       type="button"
                       onClick={() => handleCancelDownload(pack.id)}
@@ -417,59 +712,90 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
                       </button>
                     </div>
                   ) : !isInstalled ? (
-                    <button
-                      type="button"
-                      onClick={() => handleDownloadOrUpdate(pack.id, 'cloud-strict')}
-                      className="w-full min-h-[40px] px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 shadow-xs transition active:scale-[0.99]"
-                    >
-                      <DownloadCloud className="w-4 h-4" />
-                      <span>Download Pack</span>
-                    </button>
-                  ) : (
-                    <div className="flex items-center gap-2">
-                      {updateAvailable ? (
-                        <button
-                          type="button"
-                          onClick={() => handleDownloadOrUpdate(pack.id, 'cloud-strict')}
-                          className="flex-1 min-h-[40px] px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 transition"
-                        >
-                          <RefreshCw className="w-3.5 h-3.5" />
-                          <span>Update Pack</span>
-                        </button>
-                      ) : isActive ? (
-                        <div className="flex-1 min-h-[40px] px-3.5 py-2 rounded-xl bg-[var(--accent-subtle)] text-[var(--accent-text)] border border-indigo-500/30 text-xs font-bold inline-flex items-center justify-center gap-1.5">
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          <span>Active</span>
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => handleSwitchLanguage(pack.id)}
-                          className="flex-1 min-h-[40px] px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 transition"
-                        >
-                          <ArrowLeftRight className="w-3.5 h-3.5" />
-                          <span>Switch</span>
-                        </button>
-                      )}
-
+                    langBundledPacks.length > 0 ? (
                       <button
                         type="button"
-                        onClick={() => setConfirmRemoveLang(pack.id)}
-                        disabled={isRemoving}
-                        aria-label={`Remove ${pack.name} pack`}
-                        title={`Remove ${pack.name} pack (keeps flashcards & history)`}
-                        className="min-h-[40px] px-3 py-2 rounded-xl border border-[var(--border)] text-xs font-semibold text-[var(--text-secondary)] hover:text-rose-600 hover:border-rose-300 dark:hover:border-rose-800 inline-flex items-center justify-center gap-1 transition"
+                        onClick={() => handleInstallLanguageBundle(pack.id, 'auto')}
+                        disabled={Boolean(batchAllProgress)}
+                        data-testid={`install-all-included-${pack.id}`}
+                        className="w-full min-h-[40px] px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 shadow-xs transition active:scale-[0.99] tabular-nums"
                       >
-                        {isRemoving ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <>
-                            <Trash2 className="w-3.5 h-3.5" />
-                            <span>Remove</span>
-                          </>
-                        )}
+                        <DownloadCloud className="w-4 h-4 shrink-0" />
+                        <span>Install All Included Packs ({langBundledPacks.length})</span>
                       </button>
-                    </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadOrUpdate(pack.id, 'cloud-strict')}
+                        disabled={Boolean(batchAllProgress)}
+                        className="w-full min-h-[40px] px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 shadow-xs transition active:scale-[0.99]"
+                      >
+                        <DownloadCloud className="w-4 h-4" />
+                        <span>Download Pack</span>
+                      </button>
+                    )
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-2">
+                        {updateAvailable ? (
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadOrUpdate(pack.id, 'cloud-strict')}
+                            className="flex-1 min-h-[40px] px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 transition"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                            <span>Update Pack</span>
+                          </button>
+                        ) : isActive ? (
+                          <div className="flex-1 min-h-[40px] px-3.5 py-2 rounded-xl bg-[var(--accent-subtle)] text-[var(--accent-text)] border border-indigo-500/30 text-xs font-bold inline-flex items-center justify-center gap-1.5">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>Active</span>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleSwitchLanguage(pack.id)}
+                            className="flex-1 min-h-[40px] px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 transition"
+                          >
+                            <ArrowLeftRight className="w-3.5 h-3.5" />
+                            <span>Switch</span>
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => setConfirmRemoveLang(pack.id)}
+                          disabled={isRemoving}
+                          aria-label={`Remove ${pack.name} pack`}
+                          title={`Remove ${pack.name} pack (keeps flashcards & history)`}
+                          className="min-h-[40px] px-3 py-2 rounded-xl border border-[var(--border)] text-xs font-semibold text-[var(--text-secondary)] hover:text-rose-600 hover:border-rose-300 dark:hover:border-rose-800 inline-flex items-center justify-center gap-1 transition"
+                        >
+                          {isRemoving ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <>
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Remove</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+
+                      {uninstalledSubCount > 0 && langBundledPacks.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => handleInstallLanguageBundle(pack.id, 'auto')}
+                          disabled={Boolean(batchAllProgress)}
+                          data-testid={`install-all-included-${pack.id}`}
+                          className="w-full min-h-[36px] px-3 py-1.5 rounded-xl border border-indigo-300 dark:border-indigo-700/70 bg-[var(--accent-subtle)] hover:bg-indigo-100 dark:hover:bg-indigo-950/50 text-[var(--accent-text)] text-xs font-bold inline-flex items-center justify-center gap-1.5 transition tabular-nums"
+                        >
+                          <DownloadCloud className="w-3.5 h-3.5 shrink-0" />
+                          <span>
+                            Install All Included Packs ({langBundledPacks.length})
+                          </span>
+                        </button>
+                      )}
+                    </>
                   )}
 
                   {/* Strictly gated Developer Options drawer */}
@@ -598,6 +924,17 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
           })}
         </div>
       )}
+
+      {/* Developer Options: Included Packs Registry (Add, Remove, Restore Defaults) */}
+      {!isLoading && developerMode && (
+        <DeveloperPackRegistryPanel
+          packs={bundledPacks}
+          removedDefaultIds={removedDefaultIds}
+          installedBundlesMap={installedBundlesMap}
+          onRegistryChanged={() => loadPackStates(false)}
+        />
+      )}
     </div>
   );
 };
+

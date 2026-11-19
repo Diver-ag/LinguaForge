@@ -11,6 +11,7 @@ import { WordPopup } from './WordPopup';
 import { TextStatsModal } from './TextStatsModal';
 import { FuriganaText } from '../../ui/FuriganaText';
 import { JAPANESE_DICTIONARY_SAMPLE } from '../../packs/japanese/dictionaryData';
+import { PROTECTED_JA_GRAMMAR_TOKENS } from '../../packs/japanese/deinflector';
 import {
   BookOpen,
   ArrowLeft,
@@ -136,23 +137,37 @@ export const ReaderView: React.FC = () => {
       if (uniqueKeys.length === 0) return;
 
       const map: Record<string, string> = {};
+      const queryKeys: string[] = [];
 
-      try {
-        const matches = await db.jmdictEntries.where('forms').anyOf(uniqueKeys).toArray();
-        for (const entry of matches) {
-          if (entry.jlptLevel && /^N[1-5]$/i.test(entry.jlptLevel)) {
-            const cleanLvl = entry.jlptLevel.toUpperCase();
-            for (const f of entry.forms) {
-              if (!map[f]) map[f] = cleanLvl;
+      for (const w of uniqueKeys) {
+        const pInfo = PROTECTED_JA_GRAMMAR_TOKENS[w];
+        if (pInfo) {
+          map[w] = pInfo.level;
+        } else {
+          queryKeys.push(w);
+        }
+      }
+
+      if (queryKeys.length > 0) {
+        try {
+          const matches = await db.jmdictEntries.where('forms').anyOf(queryKeys).toArray();
+          for (const entry of matches) {
+            if (entry.jlptLevel && /^N[1-5]$/i.test(entry.jlptLevel)) {
+              const cleanLvl = entry.jlptLevel.toUpperCase();
+              for (const f of entry.forms) {
+                if (!PROTECTED_JA_GRAMMAR_TOKENS[f] && !map[f]) {
+                  map[f] = cleanLvl;
+                }
+              }
             }
           }
+        } catch (err) {
+          console.warn('Failed to resolve word levels:', err);
         }
-      } catch (err) {
-        console.warn('Failed to resolve word levels:', err);
       }
 
       // Fallback to sample dictionary for remaining
-      for (const w of uniqueKeys) {
+      for (const w of queryKeys) {
         if (!map[w]) {
           const sample = JAPANESE_DICTIONARY_SAMPLE.find((e) => e.word === w || e.readings.includes(w));
           if (sample?.level && /^N[1-5]$/i.test(sample.level)) {

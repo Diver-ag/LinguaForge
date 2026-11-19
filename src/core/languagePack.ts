@@ -23,6 +23,20 @@ export interface ExampleSentence {
   reading?: string;
 }
 
+export interface GrammarStep {
+  suffix: string;
+  meaning: string;
+  kind?: string;
+}
+
+export interface GrammarComponent {
+  surface: string;
+  pos: string;
+  basic: string;
+  reading?: string;
+  meaning?: string;
+}
+
 export interface DictionaryEntry {
   id: string;
   word: string;
@@ -50,7 +64,17 @@ export interface DictionaryEntry {
   examples?: ExampleSentence[];
   grammarNotes?: string[];
   conjugatedForm?: string;
-  grammarComponents?: { surface: string; pos: string; basic: string; reading?: string }[];
+  inflectedSurface?: string;
+  grammarSuffix?: string;
+  grammarMeaning?: string;
+  grammarSteps?: GrammarStep[];
+  formOf?: {
+    lemma: string;
+    entry?: DictionaryEntry;
+    grammarSuffix?: string;
+    grammarMeaning?: string;
+  }[];
+  grammarComponents?: GrammarComponent[];
 }
 
 export interface Token {
@@ -67,7 +91,11 @@ export interface Token {
   startIndex: number;
   endIndex: number;
   conjugatedForm?: string;
-  components?: { surface: string; pos: string; basic: string; reading?: string }[];
+  grammarSuffix?: string;
+  grammarMeaning?: string;
+  grammarSteps?: GrammarStep[];
+  components?: GrammarComponent[];
+  morphTag?: 'deriv-suffix' | 'na-adj-stem' | 'vs-noun' | 'particle' | 'copula';
 }
 
 export interface DifficultyLevelSystem {

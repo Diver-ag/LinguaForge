@@ -16,6 +16,7 @@ export interface LinguaForgeBackupData {
   reviewLogs?: any[];
   exportHistory?: any[];
   installedLanguagePacks?: any[];
+  customPackAssets?: any[];
   languagePackMetadata?: {
     installedLanguageIds: string[];
     versions: Record<string, string>;
@@ -26,8 +27,32 @@ export interface LinguaForgeBackupData {
   eventLogs: any[];
 }
 
+function uint8ToBase64(bytes: Uint8Array): string {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(bytes).toString('base64');
+  }
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function base64ToUint8(b64: string): Uint8Array {
+  if (typeof Buffer !== 'undefined') {
+    return new Uint8Array(Buffer.from(b64, 'base64'));
+  }
+  const binary = atob(b64);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    out[i] = binary.charCodeAt(i);
+  }
+  return out;
+}
+
 const DEFAULT_MANIFEST_URL =
-  'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@main/packs/manifest.json';
+  'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@v2.1/packs/manifest.json';
 
 export async function exportFullBackup(): Promise<string> {
   const [
@@ -41,6 +66,7 @@ export async function exportFullBackup(): Promise<string> {
     reviewLogs,
     exportHistory,
     installedLanguagePacks,
+    customPackAssets,
     eventLogs,
   ] = await Promise.all([
     db.documents.toArray(),
@@ -53,6 +79,7 @@ export async function exportFullBackup(): Promise<string> {
     db.reviewLogs.toArray(),
     db.exportHistory.toArray(),
     db.installedPacks.toArray(),
+    db.customPackAssets.toArray().catch(() => []),
     db.eventLogs.toArray(),
   ]);
 
@@ -112,6 +139,11 @@ export async function exportFullBackup(): Promise<string> {
     reviewLogs: cleanReviewLogs,
     exportHistory,
     installedLanguagePacks,
+    customPackAssets: customPackAssets.map((a) => ({
+      ...a,
+      dataEncoding: a.data instanceof Uint8Array ? 'base64' : 'utf8',
+      data: a.data instanceof Uint8Array ? uint8ToBase64(a.data) : a.data,
+    })),
     languagePackMetadata: {
       installedLanguageIds: installedLanguagePacks.map((p) => p.languageId).filter(Boolean),
       versions,
@@ -166,6 +198,7 @@ export async function restoreFromBackup(jsonData: string): Promise<{ success: bo
         db.reviewLogs,
         db.exportHistory,
         db.installedPacks,
+        db.customPackAssets,
       ],
       async () => {
         if (Array.isArray(data.documents)) {
@@ -315,6 +348,19 @@ export async function restoreFromBackup(jsonData: string): Promise<{ success: bo
           await db.installedPacks.clear();
           if (data.installedLanguagePacks.length > 0) {
             await db.installedPacks.bulkPut(data.installedLanguagePacks);
+          }
+        }
+        if (Array.isArray(data.customPackAssets)) {
+          await db.customPackAssets.clear();
+          const restoredAssets = data.customPackAssets.map((a: any) => ({
+            ...a,
+            data:
+              a?.dataEncoding === 'base64' && typeof a.data === 'string'
+                ? base64ToUint8(a.data)
+                : a?.data,
+          }));
+          if (restoredAssets.length > 0) {
+            await db.customPackAssets.bulkPut(restoredAssets);
           }
         }
       }

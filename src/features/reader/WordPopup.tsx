@@ -27,6 +27,7 @@ import { deriveFrequencyInfo } from '../../packs/japanese/jmdictFrequency';
 import { getKanjiDetailsForWord, getHardestKanjiLevel, hasInstalledKanjiData } from '../../packs/japanese/kanjiLookup';
 import { isSpeechSynthesisSupported, speakWithReliability } from '../../core/speech';
 import { getStudySettings } from '../../core/studySettings';
+import { explainJapaneseInflection, getJapaneseComponentMeaning } from '../../packs/japanese/deinflector';
 
 // Maps JMdict / UniDic / MeCab POS abbreviations to user-friendly names
 const POS_EXPANSION_MAP: Record<string, string> = {
@@ -80,16 +81,27 @@ const POS_EXPANSION_MAP: Record<string, string> = {
   連体詞: 'Adnominal',
   接頭詞: 'Prefix',
   記号: 'Symbol',
+  自立: 'independent',
+  非自立: 'auxiliary',
+  接続助詞: 'conjunctive',
+  格助詞: 'case marker',
+  係助詞: 'binding particle',
+  副助詞: 'adverbial particle',
+  終助詞: 'sentence-ending',
+  接尾: 'suffix',
+  接尾辞: 'Suffix',
 };
 
 function formatPartOfSpeech(rawPos?: string): string {
   if (!rawPos) return '';
-  const parts = rawPos.split(/[,/、\s]+/).map((p) => p.trim()).filter(Boolean);
+  const parts = rawPos.split(/[,/、\s()]+/).map((p) => p.trim()).filter(Boolean);
   if (parts.length === 0) return '';
-  const formatted = parts.map((p) => {
-    const lower = p.toLowerCase();
-    return POS_EXPANSION_MAP[lower] || POS_EXPANSION_MAP[p] || p;
-  });
+  const formatted = parts
+    .filter((p) => p !== '*')
+    .map((p) => {
+      const lower = p.toLowerCase();
+      return POS_EXPANSION_MAP[lower] || POS_EXPANSION_MAP[p] || p;
+    });
   // Filter out stray single ascii characters like lone "n"
   const clean = Array.from(new Set(formatted)).filter((p) => p.length > 1 || !/^[a-z]$/i.test(p));
   return clean.join(', ');
@@ -136,6 +148,7 @@ export const WordPopup: React.FC<WordPopupProps> = ({
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [selectedEntryIndex, setSelectedEntryIndex] = useState(0);
   const [sourceFilter, setSourceFilter] = useState<'all' | 'words' | 'names' | 'kanji' | 'examples'>('all');
+  const [overrideFormEntry, setOverrideFormEntry] = useState<DictionaryEntry | null>(null);
   const [kanjiDetails, setKanjiDetails] = useState<KanjiDetail[]>([]);
   const [hasInstalledKanji, setHasInstalledKanji] = useState<boolean>(true);
   const [selectedKanjiChar, setSelectedKanjiChar] = useState<string | null>(null);
@@ -166,13 +179,27 @@ export const WordPopup: React.FC<WordPopupProps> = ({
   useEffect(() => {
     setSelectedEntryIndex(0);
     setSourceFilter('all');
+    setOverrideFormEntry(null);
   }, [token.id, entry?.id]);
 
-  const activeEntryData = entriesList[selectedEntryIndex] || entry;
+  const activeEntryData = overrideFormEntry || entriesList[selectedEntryIndex] || entry;
 
   // Lemma is dictionary form (baseForm) first, fallback to surface
   const lemma = activeEntryData?.word || entry?.word || token.baseForm || token.surface;
   const currentStatus = wordStatuses[lemma] || wordStatuses[token.surface] || 'new';
+
+  const handleInspectFormLemma = async (targetLemma: string, preloaded?: DictionaryEntry) => {
+    if (preloaded) {
+      setOverrideFormEntry(preloaded);
+      return;
+    }
+    try {
+      const looked = await pack.lookup(targetLemma, targetLemma);
+      if (looked) setOverrideFormEntry(looked);
+    } catch {
+      // Ignore lookup failure
+    }
+  };
 
   const supportsRuby = packSupportsRuby(pack);
 
@@ -212,12 +239,19 @@ export const WordPopup: React.FC<WordPopupProps> = ({
   );
 
   const meanings = activeEntryData?.meanings || entry?.meanings || [];
+  const allPosTags =
+    activeEntryData?.partsOfSpeech ||
+    entry?.partsOfSpeech ||
+    (token.partOfSpeech ? [token.partOfSpeech] : []);
+  const isGrammarParticle = allPosTags.includes('Grammar Particle');
+  const isCopula = allPosTags.includes('Copula');
+  const isProtectedGrammar = isGrammarParticle || isCopula;
   const rawPos =
     activeEntryData?.partsOfSpeech?.join(', ') ||
     entry?.partsOfSpeech?.join(', ') ||
     token.partOfSpeech ||
     '';
-  const pos = formatPartOfSpeech(rawPos);
+  const pos = isProtectedGrammar ? '' : formatPartOfSpeech(rawPos);
   const level = activeEntryData?.level || entry?.level || token.level;
   const frequency = activeEntryData?.frequencyRank || entry?.frequencyRank || token.frequencyRank;
   const priorityTags = activeEntryData?.priorityTags || entry?.priorityTags || [];
@@ -238,8 +272,99 @@ export const WordPopup: React.FC<WordPopupProps> = ({
     return getHardestKanjiLevel(kanjiDetails);
   }, [kanjiDetails]);
 
-  const components = token.components || entry?.grammarComponents || [];
+  const components = useMemo(() => {
+    if (token.components && token.components.length > 1) return token.components;
+    if (activeEntryData?.grammarComponents && activeEntryData.grammarComponents.length > 1) {
+      return activeEntryData.grammarComponents;
+    }
+    if (entry?.grammarComponents && entry.grammarComponents.length > 1) {
+      return entry.grammarComponents;
+    }
+    return token.components || entry?.grammarComponents || [];
+  }, [token.components, activeEntryData?.grammarComponents, entry?.grammarComponents]);
+
   const hasGrammarBreakdown = components.length > 1;
+  const [componentLookups, setComponentLookups] = useState<Record<string, string>>({});
+
+  // Resolve any Breakdown component piece missing an English gloss via pack lookup
+  useEffect(() => {
+    if (!hasGrammarBreakdown) return;
+    let cancelled = false;
+    const missing = components.filter((c, idx) => {
+      if (c.meaning) return false;
+      if (idx === 0 && meanings[0]) return false;
+      if (pack.id === 'ja' && getJapaneseComponentMeaning(c.surface, c.basic, c.pos)) return false;
+      return Boolean(c.basic || c.surface);
+    });
+    if (missing.length === 0) return;
+
+    Promise.all(
+      missing.map(async (c) => {
+        const key = `${c.surface}|${c.basic}`;
+        try {
+          const target = c.basic && c.basic !== '*' ? c.basic : c.surface;
+          const res = await pack.lookup(target, target);
+          if (res?.meanings?.[0]) {
+            return [key, res.meanings[0]] as const;
+          }
+        } catch {
+          // ignore
+        }
+        return null;
+      })
+    ).then((pairs) => {
+      if (cancelled) return;
+      const next: Record<string, string> = {};
+      for (const p of pairs) {
+        if (p) next[p[0]] = p[1];
+      }
+      if (Object.keys(next).length > 0) {
+        setComponentLookups((prev) => ({ ...prev, ...next }));
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hasGrammarBreakdown, components, meanings, pack]);
+
+  const grammarInfo = useMemo(() => {
+    const isInflected = token.surface.toLowerCase() !== lemma.toLowerCase();
+    let suffix = activeEntryData?.grammarSuffix || entry?.grammarSuffix || token.grammarSuffix;
+    let meaning = activeEntryData?.grammarMeaning || entry?.grammarMeaning || token.grammarMeaning;
+
+    if (isInflected && pack.id === 'ja' && (!suffix || !meaning)) {
+      const jaExp = explainJapaneseInflection(token.surface, lemma);
+      if (!suffix && jaExp.grammarSuffix) suffix = jaExp.grammarSuffix;
+      if (!meaning && jaExp.grammarMeaning) meaning = jaExp.grammarMeaning;
+    }
+
+    if (isInflected && !suffix) {
+      let prefixLen = 0;
+      const maxP = Math.min(token.surface.length, lemma.length);
+      while (prefixLen < maxP && token.surface[prefixLen].toLowerCase() === lemma[prefixLen].toLowerCase()) {
+        prefixLen++;
+      }
+      const rem = token.surface.slice(prefixLen);
+      if (rem) suffix = `-${rem}`;
+    }
+
+    return {
+      isInflected,
+      suffix,
+      meaning,
+    };
+  }, [
+    token.surface,
+    token.grammarSuffix,
+    token.grammarMeaning,
+    lemma,
+    pack.id,
+    activeEntryData?.grammarSuffix,
+    activeEntryData?.grammarMeaning,
+    entry?.grammarSuffix,
+    entry?.grammarMeaning,
+  ]);
 
   const validReadingPrimary =
     validReadings[0] ||
@@ -442,9 +567,9 @@ export const WordPopup: React.FC<WordPopupProps> = ({
         <div className="flex items-start justify-between gap-3">
           <div className="space-y-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              {/* Primary Dictionary Form with optional Ruby Furigana / Pinyin */}
+              {/* Primary Dictionary Form (base lemma) with optional Ruby Furigana / Pinyin */}
               <div className="text-2xl font-bold font-sans text-indigo-900 dark:text-indigo-200">
-                {supportsRuby && token.furiganaSegments && token.furiganaSegments.length > 0 ? (
+                {supportsRuby && token.surface === lemma && token.furiganaSegments && token.furiganaSegments.length > 0 ? (
                   <FuriganaText
                     segments={token.furiganaSegments}
                     furiganaMode="always"
@@ -472,10 +597,21 @@ export const WordPopup: React.FC<WordPopupProps> = ({
                 </button>
               )}
 
-              {/* Note if surface in text is a conjugated form */}
+              {/* Grammar Particle / Copula Badge */}
+              {isProtectedGrammar && (
+                <span className="text-[11px] px-2 py-0.5 rounded-md font-bold bg-sky-100 text-sky-800 dark:bg-sky-950/80 dark:text-sky-300 border border-sky-200 dark:border-sky-800">
+                  {isCopula ? 'Copula' : 'Grammar Particle'}
+                </span>
+              )}
+
+              {/* Subtle badge when surface in text is a conjugated/inflected form */}
               {token.surface !== lemma && (
-                <span className="text-xs px-2 py-0.5 rounded-md font-medium bg-indigo-100 text-indigo-800 dark:bg-indigo-950/80 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
-                  in text: <strong className="font-bold">{token.surface}</strong>
+                <span className="text-[11px] px-2 py-0.5 rounded-md font-medium bg-indigo-100 text-indigo-800 dark:bg-indigo-950/80 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
+                  Conjugated form of <strong className="font-bold">{lemma}</strong>{' '}
+                  {grammarInfo.meaning && (
+                    <span className="font-semibold">· {grammarInfo.meaning} </span>
+                  )}
+                  <span className="opacity-75">(surface: {token.surface})</span>
                 </span>
               )}
 
@@ -560,7 +696,7 @@ export const WordPopup: React.FC<WordPopupProps> = ({
             )}
 
             {/* Hardest kanji estimate line: Japanese only, when word itself has no vocabulary level */}
-            {pack.id === 'ja' && !hasWordJlptLevel && hardestKanjiLevel && (
+            {pack.id === 'ja' && !isProtectedGrammar && !hasWordJlptLevel && hardestKanjiLevel && (
               <div className="text-[11px] text-slate-500 dark:text-slate-400 italic pt-1 flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
                 <span>Hardest kanji: <strong className="text-slate-700 dark:text-slate-300">{hardestKanjiLevel}</strong> (estimate)</span>
@@ -568,7 +704,7 @@ export const WordPopup: React.FC<WordPopupProps> = ({
             )}
 
             {/* Kanji levels row under word header: 1 chip per kanji */}
-            {pack.id === 'ja' && kanjiDetails.length > 0 && (
+            {pack.id === 'ja' && !isProtectedGrammar && kanjiDetails.length > 0 && (
               <div className="flex items-center gap-1.5 pt-1.5 flex-wrap">
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                   Kanji levels:
@@ -740,14 +876,55 @@ export const WordPopup: React.FC<WordPopupProps> = ({
           </div>
         </div>
 
-        {/* Part of speech & Conjugation info */}
-        {(pos || token.conjugatedForm) && (
+        {/* Part of speech & Conjugation / Grammar Explanation sub-header */}
+        {(pos || grammarInfo.isInflected || Boolean(grammarInfo.meaning) || token.conjugatedForm || (!isPinned && activeEntryData?.formOf && activeEntryData.formOf.length > 0)) && (
           <div className="mt-2 text-xs text-slate-500 dark:text-slate-400 font-medium flex items-center gap-2 flex-wrap">
             {pos && <span>{pos}</span>}
-            {token.conjugatedForm && (
-              <span className="text-indigo-600 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/50 px-2 py-0.5 rounded text-[11px]">
-                {token.conjugatedForm}
+            {isPinned && (grammarInfo.isInflected || Boolean(grammarInfo.meaning) || token.conjugatedForm) && (
+              <span className="text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200/70 dark:border-indigo-800/60 px-2 py-0.5 rounded text-[11px] font-semibold">
+                {!grammarInfo.isInflected && grammarInfo.meaning
+                  ? grammarInfo.meaning
+                  : grammarInfo.suffix
+                  ? `Conjugated (${grammarInfo.suffix})${grammarInfo.meaning ? ` · ${grammarInfo.meaning}` : ''}`
+                  : grammarInfo.meaning
+                  ? `Form of ${lemma} · ${grammarInfo.meaning}`
+                  : token.conjugatedForm}
               </span>
+            )}
+          </div>
+        )}
+
+        {/* Compact Hover Grammar Line (shown on hover tooltips before pinning) */}
+        {!isPinned && (grammarInfo.isInflected || Boolean(grammarInfo.meaning) || (activeEntryData?.formOf && activeEntryData.formOf.length > 0)) && (
+          <div className="mt-1.5 px-2.5 py-1 rounded-lg bg-indigo-50/90 dark:bg-indigo-950/70 border border-indigo-200/80 dark:border-indigo-800/70 text-[11px] text-indigo-900 dark:text-indigo-200 font-medium">
+            {grammarInfo.isInflected ? (
+              <span>
+                {['es', 'de', 'fr', 'it', 'pt', 'nl'].includes(pack.id) ? (
+                  <>
+                    <strong className="font-semibold">Form of {lemma}</strong>
+                    {grammarInfo.meaning ? ` · ${grammarInfo.meaning}` : ''}
+                  </>
+                ) : (
+                  <>
+                    <strong className="font-semibold">
+                      Conjugated{grammarInfo.suffix ? ` (${grammarInfo.suffix})` : ''}:
+                    </strong>{' '}
+                    {grammarInfo.meaning || 'inflected form'}
+                  </>
+                )}
+              </span>
+            ) : grammarInfo.meaning ? (
+              <span>{grammarInfo.meaning}</span>
+            ) : (
+              activeEntryData?.formOf &&
+              activeEntryData.formOf[0] && (
+                <span>
+                  <strong className="font-semibold">Form of {activeEntryData.formOf[0].lemma}</strong>
+                  {activeEntryData.formOf[0].grammarMeaning
+                    ? ` · ${activeEntryData.formOf[0].grammarMeaning}`
+                    : ''}
+                </span>
+              )
             )}
           </div>
         )}
@@ -814,6 +991,18 @@ export const WordPopup: React.FC<WordPopupProps> = ({
       <div className="p-4 max-h-56 overflow-y-auto space-y-3 text-sm select-text">
         {activeTab === 'meanings' && (
           <div>
+            {overrideFormEntry && entry && (
+              <div className="mb-2">
+                <button
+                  type="button"
+                  onClick={() => setOverrideFormEntry(null)}
+                  className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                >
+                  ← Back to {entry.word}
+                </button>
+              </div>
+            )}
+
             {meanings.length > 0 ? (
               <ol className="space-y-1.5 list-decimal list-inside text-slate-700 dark:text-slate-200 text-xs sm:text-sm">
                 {meanings.map((m, idx) => (
@@ -825,6 +1014,35 @@ export const WordPopup: React.FC<WordPopupProps> = ({
             ) : (
               <div className="py-3 text-center text-slate-500 dark:text-slate-400 text-xs">
                 No offline definitions found for "{lemma}". You can mark it or lookup online.
+              </div>
+            )}
+
+            {!overrideFormEntry && activeEntryData?.formOf && activeEntryData.formOf.length > 0 && (
+              <div className="mt-2.5 p-2.5 rounded-lg bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-800/60 text-xs space-y-1">
+                {activeEntryData.formOf.map((f) => (
+                  <div key={f.lemma} className="flex items-center justify-between gap-2 flex-wrap">
+                    <span className="text-amber-900 dark:text-amber-200">
+                      Form of{' '}
+                      <button
+                        type="button"
+                        onClick={() => handleInspectFormLemma(f.lemma, f.entry)}
+                        className="font-bold underline text-indigo-700 dark:text-indigo-300 hover:text-indigo-900 dark:hover:text-indigo-100 cursor-pointer"
+                      >
+                        {f.lemma}
+                      </button>
+                      {f.grammarMeaning && (
+                        <span className="text-[11px] font-medium text-amber-800 dark:text-amber-300">
+                          {' '}· {f.grammarMeaning}
+                        </span>
+                      )}
+                    </span>
+                    {f.entry?.meanings?.[0] && (
+                      <span className="text-[11px] text-slate-600 dark:text-slate-400 truncate max-w-[180px]">
+                        {f.entry.meanings[0]}
+                      </span>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
 
@@ -866,27 +1084,46 @@ export const WordPopup: React.FC<WordPopupProps> = ({
 
             {/* List of sub-parts */}
             <div className="space-y-1.5">
-              {components.map((c, idx) => (
-                <div
-                  key={idx}
-                  className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 flex items-center justify-between"
-                >
-                  <div>
-                    <div className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                      <span>{c.surface}</span>
-                      {c.basic && c.basic !== c.surface && c.basic !== '*' && (
-                        <span className="text-indigo-600 dark:text-indigo-400 font-normal text-[11px]">
-                          (dictionary: {c.basic})
-                        </span>
+              {components.map((c, idx) => {
+                const lookupKey = `${c.surface}|${c.basic}`;
+                const resolvedMeaning =
+                  c.meaning ||
+                  (idx === 0 && (c.basic === lemma || c.surface === lemma || c.pos.includes('Verb') || c.pos.includes('動詞') || c.pos.includes('形容詞') || c.pos.includes('Predicate'))
+                    ? meanings[0]
+                    : undefined) ||
+                  (pack.id === 'ja' ? getJapaneseComponentMeaning(c.surface, c.basic, c.pos) : undefined) ||
+                  componentLookups[lookupKey] ||
+                  (idx === 0 ? meanings[0] : undefined);
+
+                const formattedPos = formatPartOfSpeech(c.pos) || c.pos;
+
+                return (
+                  <div
+                    key={idx}
+                    className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 flex items-start justify-between gap-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5 flex-wrap">
+                        <span>{c.surface}</span>
+                        {c.basic && c.basic !== c.surface && c.basic !== '*' && (
+                          <span className="text-indigo-600 dark:text-indigo-400 font-normal text-[11px]">
+                            (dictionary: {c.basic})
+                          </span>
+                        )}
+                      </div>
+                      {c.reading && <div className="text-[10px] text-slate-400">{c.reading}</div>}
+                      {resolvedMeaning && (
+                        <div className="text-[11px] text-slate-700 dark:text-slate-300 mt-0.5 leading-snug">
+                          {resolvedMeaning}
+                        </div>
                       )}
                     </div>
-                    {c.reading && <span className="text-[10px] text-slate-400">{c.reading}</span>}
+                    <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 bg-slate-200/60 dark:bg-slate-700/60 px-2 py-0.5 rounded shrink-0">
+                      {formattedPos}
+                    </span>
                   </div>
-                  <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 bg-slate-200/60 dark:bg-slate-700/60 px-2 py-0.5 rounded">
-                    {c.pos}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}

@@ -8,6 +8,13 @@ if (typeof self !== 'undefined') {
 }
 
 import { katakanaToHiragana, buildFurigana } from './kanaUtils';
+import {
+  explainJapaneseInflection,
+  explainNaAdjectiveSuffix,
+  explainSuruVerbSuffix,
+  getJapaneseComponentMeaning,
+  JA_DERIVATIONAL_SUFFIXES,
+} from './deinflector';
 
 let tokenizerPromise: Promise<any> | null = null;
 let tokenizerInstance: any = null;
@@ -59,6 +66,135 @@ export interface RawKuromojiToken {
   pronunciation?: string;
 }
 
+function collectVerbGroup(rawTokens: RawKuromojiToken[], startIdx: number): {
+  group: RawKuromojiToken[];
+  nextIdx: number;
+} {
+  const cur = rawTokens[startIdx];
+  const group: RawKuromojiToken[] = [cur];
+  let j = startIdx + 1;
+
+  while (j < rawTokens.length) {
+    const next = rawTokens[j];
+
+    // 1. Chained auxiliary verbs (助動詞: ます, た, だ, ない, ぬ, せる, れる, られる, させる, たい, ようだ, そうだ, etc.)
+    if (next.pos === '助動詞') {
+      group.push(next);
+      j++;
+      continue;
+    }
+
+    // 2. Chained bound suffixes (動詞/形容詞/名詞 接尾 or 接尾辞: られ, させ, すぎる, そう, さ, etc.)
+    if (next.pos === '接尾辞' || next.pos_detail_1 === '接尾') {
+      group.push(next);
+      j++;
+      continue;
+    }
+
+    // 3. Chained non-independent subsidiary verbs/adjectives (e.g. て + い + ます, なく + ない)
+    if ((next.pos === '動詞' || next.pos === '形容詞') && next.pos_detail_1 === '非自立') {
+      group.push(next);
+      j++;
+      continue;
+    }
+
+    // 4. Chained conjunctive particles (接続助詞: て, で, ながら, たり, だり)
+    if (
+      next.pos === '助詞' &&
+      (next.pos_detail_1 === '接続助詞' ||
+        next.surface_form === 'て' ||
+        next.surface_form === 'で' ||
+        next.surface_form === 'ながら' ||
+        next.surface_form === 'たり' ||
+        next.surface_form === 'だり')
+    ) {
+      if (next.surface_form === 'て' || next.surface_form === 'で') {
+        group.push(next);
+        j++;
+        if (
+          j < rawTokens.length &&
+          (rawTokens[j].pos === '動詞' || rawTokens[j].pos === '助動詞') &&
+          (rawTokens[j].pos === '助動詞' ||
+            rawTokens[j].pos_detail_1 === '非自立' ||
+            ['い', 'いる', 'ある', 'おく', 'しまう', 'みる', 'くる', 'いく', 'おり', 'おる'].includes(
+              rawTokens[j].surface_form
+            ))
+        ) {
+          group.push(rawTokens[j]);
+          j++;
+        }
+        continue;
+      }
+
+      if (next.surface_form === 'ながら' || next.surface_form === 'たり' || next.surface_form === 'だり') {
+        group.push(next);
+        j++;
+        continue;
+      }
+    }
+
+    break;
+  }
+
+  return { group, nextIdx: j };
+}
+
+function collectNaAdjCopulaTail(
+  rawTokens: RawKuromojiToken[],
+  startIdx: number
+): { tail: RawKuromojiToken[]; nextIdx: number } | null {
+  const n1 = rawTokens[startIdx];
+  if (!n1) return null;
+
+  // Single-token simple tails: な, に, だ, です, なら
+  if (
+    (n1.surface_form === 'な' && (n1.pos === '助動詞' || n1.pos === '助詞')) ||
+    (n1.surface_form === 'に' && (n1.pos === '助詞' || n1.pos === '助動詞')) ||
+    n1.surface_form === 'なら' ||
+    n1.surface_form === 'です'
+  ) {
+    return { tail: [n1], nextIdx: startIdx + 1 };
+  }
+
+  // Multi-token copula chains: だった (だっ+た), だろう (だろ+う), だ, でした (でし+た)
+  if (n1.surface_form === 'だ' || n1.surface_form === 'だっ' || n1.surface_form === 'だろ' || n1.surface_form === 'でし') {
+    const tail: RawKuromojiToken[] = [n1];
+    let j = startIdx + 1;
+    while (j < rawTokens.length && rawTokens[j].pos === '助動詞') {
+      tail.push(rawTokens[j]);
+      j++;
+    }
+    const joined = tail.map((t) => t.surface_form).join('');
+    if (['だ', 'だった', 'だろう', 'でした'].includes(joined)) {
+      return { tail, nextIdx: j };
+    }
+  }
+
+  // Negative copula chains: ではない / ではなかった / ではありません / じゃない / じゃなかった / じゃありません
+  const n2 = rawTokens[startIdx + 1];
+  const n3 = rawTokens[startIdx + 2];
+  if (n1.surface_form === 'で' && n2?.surface_form === 'は' && n3 && ['ない', 'なかっ', 'あり'].includes(n3.surface_form)) {
+    const tail: RawKuromojiToken[] = [n1, n2, n3];
+    let j = startIdx + 3;
+    while (j < rawTokens.length && (rawTokens[j].pos === '助動詞' || rawTokens[j].surface_form === 'た' || rawTokens[j].surface_form === 'ません')) {
+      tail.push(rawTokens[j]);
+      j++;
+    }
+    return { tail, nextIdx: j };
+  }
+  if ((n1.surface_form === 'では' || n1.surface_form === 'じゃ') && n2 && ['ない', 'なかっ', 'あり'].includes(n2.surface_form)) {
+    const tail: RawKuromojiToken[] = [n1, n2];
+    let j = startIdx + 2;
+    while (j < rawTokens.length && (rawTokens[j].pos === '助動詞' || rawTokens[j].surface_form === 'た' || rawTokens[j].surface_form === 'ません')) {
+      tail.push(rawTokens[j]);
+      j++;
+    }
+    return { tail, nextIdx: j };
+  }
+
+  return null;
+}
+
 export function mergeRawTokens(rawTokens: RawKuromojiToken[], text: string) {
   const merged: any[] = [];
   let cursor = 0;
@@ -93,50 +229,129 @@ export function mergeRawTokens(rawTokens: RawKuromojiToken[], text: string) {
       continue;
     }
 
+    // Rule B (Kuromoji POS): Na-adjective stem (名詞, 形容動詞語幹, excluding 接尾 which Rule A handles first)
+    if (cur.pos === '名詞' && cur.pos_detail_1 === '形容動詞語幹') {
+      const copulaMatch = collectNaAdjCopulaTail(rawTokens, i + 1);
+      if (copulaMatch) {
+        const tailStr = copulaMatch.tail.map((t) => t.surface_form).join('');
+        const naExp = explainNaAdjectiveSuffix(tailStr);
+        if (naExp) {
+          const group = [cur, ...copulaMatch.tail];
+          const surface = group.map((t) => t.surface_form).join('');
+          const baseForm = cur.basic_form && cur.basic_form !== '*' ? cur.basic_form : cur.surface_form;
+          const reading = katakanaToHiragana(group.map((t) => t.reading || '').join(''));
+          const stemReading = cur.reading ? katakanaToHiragana(cur.reading) : undefined;
+          const furiganaSegments = [
+            ...(buildFurigana(cur.surface_form, stemReading, baseForm) || [{ text: cur.surface_form }]),
+            { text: tailStr },
+          ];
+          const components = [
+            {
+              surface: cur.surface_form,
+              basic: baseForm,
+              pos: 'Na-adjective',
+              reading: stemReading,
+            },
+            {
+              surface: tailStr,
+              basic: tailStr,
+              pos: tailStr === 'な' ? 'Attributive' : tailStr === 'に' ? 'Adverbial' : 'Copula',
+              reading: katakanaToHiragana(copulaMatch.tail.map((t) => t.reading || '').join('')) || tailStr,
+              meaning: naExp.grammarMeaning,
+            },
+          ];
+
+          merged.push({
+            id: `tok-${i}-${safeStart}`,
+            surface,
+            baseForm,
+            reading: reading || undefined,
+            furiganaSegments,
+            partOfSpeech: 'Na-adjective',
+            isPunctuation: false,
+            isWord: true,
+            morphTag: 'na-adj-stem',
+            conjugatedForm: `Conjugated (${naExp.grammarSuffix}) · ${naExp.grammarMeaning}`,
+            grammarSuffix: naExp.grammarSuffix,
+            grammarMeaning: naExp.grammarMeaning,
+            grammarSteps: [{ suffix: tailStr, meaning: naExp.grammarMeaning, kind: 'na-adj' }],
+            components,
+            startIndex: safeStart,
+            endIndex: safeStart + surface.length,
+          });
+
+          cursor = safeStart + surface.length;
+          i = copulaMatch.nextIdx;
+          continue;
+        }
+      }
+    }
+
+    // Rule C (Kuromoji POS): Suru-noun (名詞, サ変接続) + する / できる (and its conjugated chain)
+    const nextTok = rawTokens[i + 1];
+    if (
+      cur.pos === '名詞' &&
+      cur.pos_detail_1 === 'サ変接続' &&
+      nextTok &&
+      nextTok.pos === '動詞' &&
+      (nextTok.basic_form === 'する' || nextTok.basic_form === 'できる')
+    ) {
+      const { group: verbGroup, nextIdx } = collectVerbGroup(rawTokens, i + 1);
+      const verbSurface = verbGroup.map((t) => t.surface_form).join('');
+      const baseVerb = nextTok.basic_form === 'できる' ? 'できる' : 'する';
+      const suruExp = explainSuruVerbSuffix(verbSurface, baseVerb);
+      const surface = `${cur.surface_form}${verbSurface}`;
+      const baseForm = cur.basic_form && cur.basic_form !== '*' ? cur.basic_form : cur.surface_form;
+      const stemReading = cur.reading ? katakanaToHiragana(cur.reading) : undefined;
+      const verbReading = katakanaToHiragana(verbGroup.map((t) => t.reading || '').join(''));
+      const fullReading = `${stemReading || ''}${verbReading || ''}`;
+      const furiganaSegments = [
+        ...(buildFurigana(cur.surface_form, stemReading, baseForm) || [{ text: cur.surface_form }]),
+        { text: verbSurface },
+      ];
+      const components = [
+        {
+          surface: cur.surface_form,
+          basic: baseForm,
+          pos: 'Noun (Suru verb)',
+          reading: stemReading,
+        },
+        {
+          surface: verbSurface,
+          basic: baseVerb,
+          pos: 'Verb',
+          reading: verbReading || verbSurface,
+          meaning: suruExp.verbComponentMeaning,
+        },
+      ];
+
+      merged.push({
+        id: `tok-${i}-${safeStart}`,
+        surface,
+        baseForm,
+        reading: fullReading || undefined,
+        furiganaSegments,
+        partOfSpeech: 'Verb (Suru)',
+        isPunctuation: false,
+        isWord: true,
+        morphTag: 'vs-noun',
+        conjugatedForm: `Conjugated (${suruExp.grammarSuffix}) · ${suruExp.grammarMeaning}`,
+        grammarSuffix: suruExp.grammarSuffix,
+        grammarMeaning: suruExp.grammarMeaning,
+        grammarSteps: suruExp.steps,
+        components,
+        startIndex: safeStart,
+        endIndex: safeStart + surface.length,
+      });
+
+      cursor = safeStart + surface.length;
+      i = nextIdx;
+      continue;
+    }
+
     // Check if Head is a Verb (動詞) or Adjective (形容詞)
     if (cur.pos === '動詞' || cur.pos === '形容詞') {
-      const group: RawKuromojiToken[] = [cur];
-      let j = i + 1;
-
-      while (j < rawTokens.length) {
-        const next = rawTokens[j];
-
-        // 1. Chained auxiliary verbs (助動詞: ます, た, だ, ない, ぬ, せる, れる, たい, etc.)
-        if (next.pos === '助動詞') {
-          group.push(next);
-          j++;
-          continue;
-        }
-
-        // 2. Chained verb suffixes (動詞 接尾: られ, させ, etc. e.g. 見 + られ + ます)
-        if (next.pos === '動詞' && next.pos_detail_1 === '接尾') {
-          group.push(next);
-          j++;
-          continue;
-        }
-
-        // 3. Chained conjunctive particles (て / で) followed by auxiliary / subsidiary verb
-        if (
-          next.pos === '助詞' &&
-          (next.surface_form === 'て' || next.surface_form === 'で')
-        ) {
-          if (
-            j + 1 < rawTokens.length &&
-            (rawTokens[j + 1].pos === '動詞' || rawTokens[j + 1].pos === '助動詞')
-          ) {
-            group.push(next);
-            group.push(rawTokens[j + 1]);
-            j += 2;
-            continue;
-          }
-          // Standalone trailing te-form: e.g. 食べて
-          group.push(next);
-          j++;
-          continue;
-        }
-
-        break;
-      }
+      const { group, nextIdx: j } = collectVerbGroup(rawTokens, i);
 
       const surface = group.map((t) => t.surface_form).join('');
       const baseForm =
@@ -145,16 +360,42 @@ export function mergeRawTokens(rawTokens: RawKuromojiToken[], text: string) {
       const rawReadingKana = group.map((t) => t.reading || '').join('');
       const reading = katakanaToHiragana(rawReadingKana);
 
-      // Determine conjugated description
+      // Compute human-readable grammar explanation + suffix for conjugated forms
       const auxParts = group.slice(1).map((t) => t.surface_form).join('');
-      const conjugatedForm = auxParts ? `Form: ${auxParts}` : undefined;
+      const explained =
+        surface !== baseForm ? explainJapaneseInflection(surface, baseForm) : undefined;
 
-      const components = group.map((t) => ({
-        surface: t.surface_form,
-        basic: t.basic_form && t.basic_form !== '*' ? t.basic_form : t.surface_form,
-        pos: `${t.pos}${t.pos_detail_1 ? ` (${t.pos_detail_1})` : ''}`,
-        reading: t.reading ? katakanaToHiragana(t.reading) : undefined,
-      }));
+      const grammarSuffix =
+        explained?.grammarSuffix || (auxParts ? `-${auxParts}` : surface !== baseForm ? `-${surface}` : undefined);
+
+      const components = group.map((t, idx) => {
+        const compBasic = t.basic_form && t.basic_form !== '*' ? t.basic_form : t.surface_form;
+        const compPos = `${t.pos}${t.pos_detail_1 ? ` (${t.pos_detail_1})` : ''}`;
+        const compReading = t.reading ? katakanaToHiragana(t.reading) : undefined;
+        const compMeaning =
+          idx > 0 ? getJapaneseComponentMeaning(t.surface_form, compBasic, compPos) : undefined;
+        return {
+          surface: t.surface_form,
+          basic: compBasic,
+          pos: compPos,
+          reading: compReading,
+          meaning: compMeaning,
+        };
+      });
+
+      const fallbackChainMeaning = components
+        .slice(1)
+        .map((c) => c.meaning)
+        .filter((m): m is string => Boolean(m))
+        .join(' + ');
+
+      const grammarMeaning = explained?.grammarMeaning || fallbackChainMeaning || undefined;
+      const grammarSteps = explained?.grammarSteps?.length ? explained.grammarSteps : undefined;
+      const conjugatedForm = grammarSuffix
+        ? grammarMeaning
+          ? `Conjugated (${grammarSuffix}) · ${grammarMeaning}`
+          : `Conjugated (${grammarSuffix})`
+        : undefined;
 
       // Generate furigana segments based on token's surface and reading
       const furiganaSegments = buildFurigana(surface, reading, baseForm);
@@ -169,6 +410,9 @@ export function mergeRawTokens(rawTokens: RawKuromojiToken[], text: string) {
         isPunctuation: false,
         isWord: true,
         conjugatedForm,
+        grammarSuffix,
+        grammarMeaning,
+        grammarSteps,
         components,
         startIndex: safeStart,
         endIndex: safeStart + surface.length,
@@ -179,19 +423,38 @@ export function mergeRawTokens(rawTokens: RawKuromojiToken[], text: string) {
       continue;
     }
 
-    // Standalone Particle, Noun, Adverb, Conjunction, etc.
+    // Standalone Particle, Copula, Derivational Suffix, Noun, Adverb, Conjunction, etc.
     const isParticle = cur.pos === '助詞';
+    const isCopula = cur.pos === '助動詞' && (cur.basic_form === 'だ' || cur.basic_form === 'です' || curSurface === 'だ' || curSurface === 'です');
+    const isDerivSuffix =
+      cur.pos === '接尾辞' ||
+      cur.pos_detail_1 === '接尾' ||
+      JA_DERIVATIONAL_SUFFIXES.has(curSurface);
+    const morphTag = isDerivSuffix
+      ? 'deriv-suffix'
+      : cur.pos === '名詞' && cur.pos_detail_1 === '形容動詞語幹'
+      ? 'na-adj-stem'
+      : cur.pos === '名詞' && cur.pos_detail_1 === 'サ変接続'
+      ? 'vs-noun'
+      : isParticle
+      ? 'particle'
+      : isCopula
+      ? 'copula'
+      : undefined;
+
     const isWord = !isPunct && curSurface.trim().length > 0;
     const baseForm =
       cur.basic_form && cur.basic_form !== '*' ? cur.basic_form : cur.surface_form;
     const rawReading = cur.reading ? katakanaToHiragana(cur.reading) : undefined;
+    const standalonePos = `${cur.pos}${cur.pos_detail_1 ? ` (${cur.pos_detail_1})` : ''}`;
 
     const components = [
       {
         surface: cur.surface_form,
         basic: baseForm,
-        pos: `${cur.pos}${cur.pos_detail_1 ? ` (${cur.pos_detail_1})` : ''}`,
+        pos: standalonePos,
         reading: rawReading,
+        meaning: getJapaneseComponentMeaning(cur.surface_form, baseForm, standalonePos),
       },
     ];
 
@@ -204,9 +467,15 @@ export function mergeRawTokens(rawTokens: RawKuromojiToken[], text: string) {
       reading: rawReading,
       furiganaSegments,
       partOfSpeech: isParticle
-        ? 'Particle'
+        ? 'Grammar Particle'
+        : isCopula
+        ? 'Copula'
         : cur.pos === '名詞'
-        ? 'Noun'
+        ? cur.pos_detail_1 === '形容動詞語幹'
+          ? 'Na-adjective'
+          : cur.pos_detail_1 === 'サ変接続'
+          ? 'Noun (Suru verb)'
+          : 'Noun'
         : cur.pos === '副詞'
         ? 'Adverb'
         : cur.pos === '接続詞'
@@ -214,6 +483,7 @@ export function mergeRawTokens(rawTokens: RawKuromojiToken[], text: string) {
         : cur.pos,
       isPunctuation: false,
       isWord,
+      morphTag,
       components,
       startIndex: safeStart,
       endIndex: safeStart + curSurface.length,
