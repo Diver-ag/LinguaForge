@@ -9,9 +9,11 @@ import {
   readTextFromFileOrBytes,
   removeBundledPackFromRegistry,
   restoreDefaultBundledPacks,
+  runBundledPacksCheck,
   type BundledPackCategory,
   type BundledPackDefinition,
   type InstalledBundledPackStatus,
+  type PackCheckRow,
 } from '../../core/bundledPacks';
 import {
   BUNDLED_PACK_CATEGORIES,
@@ -28,6 +30,8 @@ import {
   AlertCircle,
   Table,
   X,
+  Stethoscope,
+  Loader2,
 } from 'lucide-react';
 
 export interface DeveloperPackRegistryPanelProps {
@@ -79,6 +83,13 @@ export const DeveloperPackRegistryPanel: React.FC<DeveloperPackRegistryPanelProp
     type: 'success' | 'error';
     message: string;
   } | null>(null);
+
+  // Pack check diagnostics state
+  const [isCheckingPacks, setIsCheckingPacks] = useState(false);
+  const [packCheckProgress, setPackCheckProgress] = useState<{ checked: number; total: number } | null>(
+    null
+  );
+  const [packCheckResults, setPackCheckResults] = useState<PackCheckRow[] | null>(null);
 
   const visiblePacks = useMemo(() => {
     if (filterLang === 'all') return packs;
@@ -297,6 +308,27 @@ export const DeveloperPackRegistryPanel: React.FC<DeveloperPackRegistryPanelProp
     }
   };
 
+  const handleRunPackCheck = async () => {
+    setIsCheckingPacks(true);
+    setPackCheckProgress({ checked: 0, total: packs.length });
+    setStatusFeedback(null);
+    try {
+      const results = await runBundledPacksCheck(packs, {
+        maxRows: 100,
+        onProgress: (checked, total) => setPackCheckProgress({ checked, total }),
+      });
+      setPackCheckResults(results);
+    } catch (err: any) {
+      setStatusFeedback({
+        type: 'error',
+        message: err?.message || 'Pack check failed.',
+      });
+    } finally {
+      setIsCheckingPacks(false);
+      setPackCheckProgress(null);
+    }
+  };
+
   return (
     <section
       aria-label="Included Packs Registry (Developer)"
@@ -333,6 +365,25 @@ export const DeveloperPackRegistryPanel: React.FC<DeveloperPackRegistryPanelProp
               );
             })}
           </select>
+
+          <button
+            type="button"
+            onClick={handleRunPackCheck}
+            disabled={busyAction || isCheckingPacks || packs.length === 0}
+            data-testid="pack-check-btn"
+            className="min-h-[36px] px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] hover:bg-[var(--border)] disabled:opacity-50 text-xs font-bold text-[var(--text)] inline-flex items-center gap-1.5 transition whitespace-nowrap shrink-0"
+          >
+            {isCheckingPacks ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Stethoscope className="w-3.5 h-3.5" />
+            )}
+            <span>
+              {isCheckingPacks && packCheckProgress
+                ? `Checking ${packCheckProgress.checked}/${packCheckProgress.total}`
+                : 'Pack check'}
+            </span>
+          </button>
 
           <button
             type="button"
@@ -407,6 +458,91 @@ export const DeveloperPackRegistryPanel: React.FC<DeveloperPackRegistryPanelProp
           >
             <X className="w-3.5 h-3.5" />
           </button>
+        </div>
+      )}
+
+      {/* Pack Check Diagnostic Results Table */}
+      {packCheckResults && (
+        <div
+          data-testid="pack-check-results"
+          className="rounded-xl border border-[var(--border)] bg-[var(--surface-muted)]/40 overflow-hidden"
+        >
+          <div className="px-3 py-2 border-b border-[var(--border)] flex items-center justify-between gap-2 text-xs">
+            <div className="font-bold text-[var(--text)] tabular-nums">
+              Pack check results ({packCheckResults.length} tested ·{' '}
+              <span className="text-emerald-600 dark:text-emerald-400">
+                {packCheckResults.filter((r) => r.status === 'ok').length} ok
+              </span>
+              {packCheckResults.some((r) => r.status === 'warning') && (
+                <>
+                  {' · '}
+                  <span className="text-amber-600 dark:text-amber-400">
+                    {packCheckResults.filter((r) => r.status === 'warning').length} warning
+                  </span>
+                </>
+              )}
+              {packCheckResults.some((r) => r.status === 'error') && (
+                <>
+                  {' · '}
+                  <span className="text-rose-600 dark:text-rose-400">
+                    {packCheckResults.filter((r) => r.status === 'error').length} error
+                  </span>
+                </>
+              )}
+              )
+            </div>
+            <button
+              type="button"
+              onClick={() => setPackCheckResults(null)}
+              aria-label="Close pack check results"
+              className="p-1 text-[var(--text-muted)] hover:text-[var(--text)]"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-[var(--border)] bg-[var(--surface-muted)]/70 text-[11px] text-[var(--text-muted)] uppercase tracking-wider">
+                  <th className="py-2 px-3 font-semibold">pack</th>
+                  <th className="py-2 px-3 font-semibold">status</th>
+                  <th className="py-2 px-3 font-semibold">detected format</th>
+                  <th className="py-2 px-3 font-semibold">rows found</th>
+                  <th className="py-2 px-3 font-semibold">problem</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--border)]">
+                {packCheckResults.map((row) => (
+                  <tr key={row.packId} className="bg-[var(--surface)]/70">
+                    <td className="py-2 px-3">
+                      <div className="font-semibold text-[var(--text)]">{row.packTitle}</div>
+                      <div className="text-[10px] font-mono text-[var(--text-muted)] truncate max-w-[220px]">
+                        {row.filePath}
+                      </div>
+                    </td>
+                    <td className="py-2 px-3 whitespace-nowrap font-bold">
+                      {row.status === 'ok' ? (
+                        <span className="text-emerald-600 dark:text-emerald-400">OK</span>
+                      ) : row.status === 'warning' ? (
+                        <span className="text-amber-600 dark:text-amber-400">Warning</span>
+                      ) : (
+                        <span className="text-rose-600 dark:text-rose-400">Error</span>
+                      )}
+                    </td>
+                    <td className="py-2 px-3 whitespace-nowrap font-mono text-[11px] text-[var(--text-secondary)]">
+                      {row.detectedFormat}
+                    </td>
+                    <td className="py-2 px-3 whitespace-nowrap tabular-nums text-[var(--text)]">
+                      {row.rowsFound.toLocaleString()}
+                    </td>
+                    <td className="py-2 px-3 text-[11px] text-[var(--text-secondary)] max-w-[360px] break-words">
+                      {row.problem || '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -730,7 +866,17 @@ export const DeveloperPackRegistryPanel: React.FC<DeveloperPackRegistryPanelProp
                         </div>
                         {installedInfo && (
                           <div className="text-[10px] text-[var(--text-muted)] tabular-nums">
-                            Installed ({installedInfo.entryCount.toLocaleString()} entries)
+                            {installedInfo.status === 'covered'
+                              ? `Covered (${installedInfo.coveredBy || 'Core Dict'})`
+                              : `Installed (${installedInfo.entryCount.toLocaleString()} entries)`}
+                          </div>
+                        )}
+                        {installedInfo?.warning && (
+                          <div
+                            className="text-[10px] text-amber-600 dark:text-amber-400 truncate max-w-[200px]"
+                            title={installedInfo.warning}
+                          >
+                            {installedInfo.warning}
                           </div>
                         )}
                       </td>

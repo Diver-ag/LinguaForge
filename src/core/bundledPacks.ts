@@ -2,27 +2,37 @@ import {
   db,
   deleteImportInBatches,
   type CustomPackAssetItem,
+  type ImportKind,
   type ImportRecord,
-  type InstalledLanguagePackRecord,
   type JmdictEntryItem,
   type KanjiEntryItem,
 } from '../db/db';
 import { ensureDefaultDeck } from '../db/cards';
 import { getAllLanguagePacks, getLanguagePack } from '../packs/registry';
 import { deriveBandFromRank } from '../packs/japanese/jmdictFrequency';
-import { isEasierLevel } from '../packs/japanese/kanjiListParser';
+import {
+  inferLevelFromFileName,
+  isEasierLevel,
+  normalizeJlptLevel,
+  parseKanjiListTable,
+  resolveRowJlptLevel,
+  SINGLE_KANJI_REGEX,
+} from '../packs/japanese/kanjiListParser';
 import { invalidateMandarinLexiconCache } from '../packs/multilingualPack';
 import { mapFrequencyRankToLevel } from './languagePack';
 import { logEvent } from './eventLogger';
 import {
   DEFAULT_PACK_MANIFEST_URL,
-  decompressGzipBytesToText,
   extractRawPackDataFromParsedJson,
+  fetchCloudPackManifest,
+  getPackManifestUrl,
   installLanguagePack,
   isAbortError,
-  isGzipBytes,
   normalizeEntriesToJmdictItems,
+  normalizeRawPackItem,
+  resolveManifestPackUrl,
   storePackFormsInBatches,
+  type RawPackEntryInput,
 } from './packManager';
 import {
   BUNDLED_PACK_CATEGORY_LABELS,
@@ -34,11 +44,16 @@ import {
   parseDelimitedPackTable,
   stripUtf8Bom,
   type BundledPackCategory,
-  type ParsedDictCsvRow,
   type ParsedExampleCsvRow,
   type ParsedFrequencyCsvRow,
   type ParsedKanjiCsvRow,
 } from './packCsvParser';
+import {
+  PackLoadError,
+  detectAndDecodePackContent,
+  formatPackError,
+  type ContentDetectionResult,
+} from './packFormatDetector';
 
 export type { BundledPackCategory };
 export { BUNDLED_PACK_CATEGORY_LABELS };
@@ -58,9 +73,14 @@ export interface BundledPackDefinition {
   sizeBytes?: number;
   entryCount?: number;
   version?: string;
+  required?: boolean;
   origin: 'default' | 'auto-discovered' | 'custom';
   customAssetId?: string;
   columnMapping?: Record<string, number>;
+}
+
+export function isBundledPackRequired(pack: BundledPackDefinition): boolean {
+  return pack.required !== undefined ? pack.required : pack.category === 'core-dict';
 }
 
 export interface BundledPacksCustomizations {
@@ -76,6 +96,65 @@ export interface InstalledBundledPackStatus {
   installedAt: number;
   entryCount: number;
   version?: string;
+  status?: 'installed' | 'covered';
+  coveredBy?: string;
+  isFullDictionary?: boolean;
+  warning?: string;
+}
+
+export interface BundledPackFailure {
+  pack: BundledPackDefinition;
+  languageId: string;
+  error: string;
+  httpStatus?: number;
+  detectedFormat?: string;
+  required: boolean;
+}
+
+export interface BundledPackSkipped {
+  pack: BundledPackDefinition;
+  reason: 'covered' | 'manual-duplicate';
+  details: string;
+  existingImportId?: string;
+}
+
+export type LanguageInstallStatus = 'installed' | 'partial' | 'not-installed';
+
+export interface LanguageBundleInstallResult {
+  languageId: string;
+  installedCount: number;
+  totalPacks: number;
+  totalEntries: number;
+  packIds: string[];
+  failedPacks: BundledPackFailure[];
+  skippedPacks: BundledPackSkipped[];
+  warnings: string[];
+  languageStatus: LanguageInstallStatus;
+}
+
+export interface AllLanguagesBundleInstallResult {
+  languagesInstalled: string[];
+  partialLanguages: string[];
+  totalPacksInstalled: number;
+  totalPacksAttempted: number;
+  totalEntries: number;
+  failedPacks: BundledPackFailure[];
+  skippedPacks: BundledPackSkipped[];
+  warnings: string[];
+  summaryText: string;
+}
+
+export interface PackCheckRow {
+  packId: string;
+  packTitle: string;
+  languageId: string;
+  category: BundledPackCategory;
+  filePath: string;
+  status: 'ok' | 'warning' | 'error';
+  detectedFormat: string;
+  rowsFound: number;
+  problem: string;
+  httpStatus?: number;
 }
 
 export interface LanguageBundleInstallProgress {
@@ -841,135 +920,681 @@ export async function readTextFromFileOrBytes(
   data: Uint8Array | ArrayBuffer | string,
   fileName = ''
 ): Promise<{ text: string; sizeBytes: number }> {
-  if (typeof data === 'string') {
-    return {
-      text: stripUtf8Bom(data),
-      sizeBytes: new TextEncoder().encode(data).byteLength,
-    };
-  }
-  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-  const lower = fileName.toLowerCase().split('?')[0];
-  let text = '';
-  if (lower.endsWith('.gz') || isGzipBytes(bytes)) {
-    text = await decompressGzipBytesToText(bytes);
-  } else {
-    text = new TextDecoder('utf-8').decode(bytes);
-  }
+  const res = await detectAndDecodePackContent(data, {
+    packTitle: fileName || 'Pack file',
+    filePath: fileName || 'upload',
+  }).catch(async (err) => {
+    // Allow raw text decoding in preview helper even if format check flags empty
+    if (typeof data === 'string') {
+      return {
+        text: stripUtf8Bom(data),
+        sizeBytes: new TextEncoder().encode(data).byteLength,
+      };
+    }
+    throw err;
+  });
   return {
-    text: stripUtf8Bom(text),
-    sizeBytes: bytes.byteLength,
+    text: res.text,
+    sizeBytes: res.sizeBytes,
   };
 }
 
-async function loadBundledPackText(
+function resolvePackFilePath(pack: BundledPackDefinition): string {
+  return (pack.url || `indexeddb://customPackAssets/${pack.customAssetId || pack.id}`).trim();
+}
+
+function getFileNameFromPath(filePath: string, pack: BundledPackDefinition): string {
+  const base = filePath.split('?')[0].split('/').pop();
+  return base || `${pack.id}.${pack.fileFormat || 'json'}`;
+}
+
+async function fetchAndDetectPackContent(
   pack: BundledPackDefinition,
-  signal?: AbortSignal
-): Promise<{ text: string; sizeBytes: number; fileName: string }> {
+  signal?: AbortSignal,
+  overrideUrl?: string
+): Promise<{
+  detected: ContentDetectionResult;
+  fileName: string;
+  filePath: string;
+  httpStatus?: number;
+}> {
   if (pack.sourceType === 'custom-asset') {
     const asset = await db.customPackAssets.get(pack.customAssetId || pack.id);
+    const filePath = asset?.fileName || resolvePackFilePath(pack);
     if (!asset) {
-      throw new Error(`Custom pack asset "${pack.title}" not found in IndexedDB.`);
+      throw new PackLoadError({
+        packTitle: pack.title,
+        filePath,
+        reason: 'Custom pack asset not found in IndexedDB.',
+      });
     }
-    const { text, sizeBytes } = await readTextFromFileOrBytes(asset.data, asset.fileName);
-    return { text, sizeBytes: asset.sizeBytes || sizeBytes, fileName: asset.fileName };
+    const detected = await detectAndDecodePackContent(asset.data, {
+      packTitle: pack.title,
+      filePath,
+      declaredFormat: pack.fileFormat,
+    });
+    return { detected, fileName: asset.fileName, filePath };
   }
 
-  if (!pack.url) {
-    throw new Error(`Pack "${pack.title}" has no source URL.`);
+  const targetUrl = (overrideUrl || pack.url || '').trim();
+  if (!targetUrl) {
+    throw new PackLoadError({
+      packTitle: pack.title,
+      filePath: '(no URL)',
+      reason: 'Pack has no source URL.',
+    });
   }
 
-  const res = await fetch(pack.url, { signal });
+  let res: Response;
+  try {
+    res = await fetch(targetUrl, { signal });
+  } catch (err: any) {
+    if (isAbortError(err)) throw err;
+    throw new PackLoadError({
+      packTitle: pack.title,
+      filePath: targetUrl,
+      reason: err?.message || 'Network error while fetching pack.',
+    });
+  }
+
   if (!res.ok) {
-    throw new Error(`HTTP ${res.status} while fetching ${pack.url}`);
+    throw new PackLoadError({
+      packTitle: pack.title,
+      filePath: targetUrl,
+      httpStatus: res.status,
+      reason:
+        res.status === 404
+          ? `File not found on server: ${targetUrl}`
+          : `HTTP ${res.status} ${res.statusText || 'request failed'}`,
+    });
   }
+
   const buf = await res.arrayBuffer();
-  const fileName = pack.url.split('?')[0].split('/').pop() || `${pack.id}.${pack.fileFormat || 'json'}`;
-  const { text, sizeBytes } = await readTextFromFileOrBytes(buf, fileName);
-  return { text, sizeBytes, fileName };
+  const fileName = getFileNameFromPath(targetUrl, pack);
+  const detected = await detectAndDecodePackContent(buf, {
+    packTitle: pack.title,
+    filePath: targetUrl,
+    httpStatus: res.status,
+    declaredFormat: pack.fileFormat,
+  });
+
+  return {
+    detected,
+    fileName,
+    filePath: targetUrl,
+    httpStatus: res.status,
+  };
 }
 
-function extractWordsFromSentence(sentence: string): string[] {
-  const out = new Set<string>();
-  // Latin/Cyrillic/Hangul words (>= 2 chars)
-  const wordMatches = sentence.match(/[\p{L}\p{N}]{2,}/gu) || [];
-  for (const w of wordMatches) {
-    out.add(w);
-    out.add(w.toLowerCase());
+// ---------------------------------------------------------------------------
+// Content-Based Format-to-Parser Category Router (shared by importers & Pack check)
+// ---------------------------------------------------------------------------
+
+function extractKanjiRowFromJsonItem(
+  item: Record<string, any>,
+  inferredLevel: string | null
+): ParsedKanjiCsvRow | null {
+  const ch = String(item.character ?? item.kanji ?? item.char ?? item.utf ?? '')
+    .normalize('NFC')
+    .trim();
+  if (!ch || !SINGLE_KANJI_REGEX.test(ch)) return null;
+
+  const rawLvl = item.jlptLevel ?? item.jlpt ?? item.level ?? item.jlpt_level ?? '';
+  const jlptLevel = resolveRowJlptLevel(rawLvl, inferredLevel);
+
+  let meanings: string[] = [];
+  if (Array.isArray(item.meanings)) {
+    meanings = item.meanings.map((m: any) => String(m).trim()).filter(Boolean);
+  } else if (typeof item.meaning === 'string') {
+    meanings = item.meaning
+      .split(/[;|,]+/)
+      .map((s: string) => s.trim())
+      .filter(Boolean);
+  } else if (typeof item.description === 'string') {
+    const m = item.description.match(/\bmeans\s+([^.]+)\./i);
+    if (m && m[1]) {
+      meanings = m[1]
+        .split(/[,;]+/)
+        .map((s: string) => s.trim())
+        .filter(Boolean);
+    }
   }
-  // CJK contiguous runs & bigrams/single kanji for CJK sentence linking
-  const cjkRuns = sentence.match(/[\u4e00-\u9faf\u3400-\u4dbf]+/g) || [];
-  for (const run of cjkRuns) {
-    out.add(run);
-    for (let len = Math.min(4, run.length); len >= 1; len--) {
-      for (let i = 0; i + len <= run.length; i++) {
-        out.add(run.slice(i, i + len));
+
+  const onReadings: string[] = Array.isArray(item.readings?.on)
+    ? item.readings.on.map((v: any) => String(v).trim()).filter(Boolean)
+    : Array.isArray(item.onyomi)
+    ? item.onyomi.map((v: any) => String(v).trim()).filter(Boolean)
+    : typeof item.onyomi === 'string'
+    ? item.onyomi.split(/[,;/、\s]+/).filter(Boolean)
+    : [];
+
+  const kunReadings: string[] = Array.isArray(item.readings?.kun)
+    ? item.readings.kun.map((v: any) => String(v).trim()).filter(Boolean)
+    : Array.isArray(item.kunyomi)
+    ? item.kunyomi.map((v: any) => String(v).trim()).filter(Boolean)
+    : typeof item.kunyomi === 'string'
+    ? item.kunyomi.split(/[,;/、\s]+/).filter(Boolean)
+    : [];
+
+  const rawStroke = item.strokeCount ?? item.strokes ?? item.stroke_count;
+  const parsedStroke =
+    typeof rawStroke === 'number'
+      ? rawStroke
+      : typeof rawStroke === 'string'
+      ? parseInt(rawStroke.replace(/\D/g, ''), 10)
+      : NaN;
+  const strokeCount = Number.isFinite(parsedStroke) && parsedStroke > 0 ? parsedStroke : undefined;
+
+  return {
+    character: ch,
+    jlptLevel,
+    meanings,
+    onReadings,
+    kunReadings,
+    strokeCount,
+  };
+}
+
+function extractExamplesFromJsonItem(item: unknown, limit?: number): ParsedExampleCsvRow[] {
+  if (!item || typeof item !== 'object') return [];
+  const obj = item as Record<string, any>;
+  const out: ParsedExampleCsvRow[] = [];
+
+  // 1. jmdict-simplified word object containing sense[].examples[]
+  if (Array.isArray(obj.sense)) {
+    const kanjiHeadwords = Array.isArray(obj.kanji)
+      ? obj.kanji.map((k: any) => String(k?.text || '').trim()).filter(Boolean)
+      : [];
+    const kanaReadings = Array.isArray(obj.kana)
+      ? obj.kana.map((k: any) => String(k?.text || '').trim()).filter(Boolean)
+      : [];
+
+    for (const s of obj.sense) {
+      if (!s || !Array.isArray(s.examples)) continue;
+      for (const ex of s.examples) {
+        if (!ex || typeof ex !== 'object') continue;
+        const sentences = Array.isArray(ex.sentences) ? ex.sentences : [];
+        let targetSent = '';
+        let engSent = '';
+        for (const sent of sentences) {
+          if (!sent || typeof sent !== 'object') continue;
+          const lang = String(sent.lang || '').toLowerCase();
+          const txt = String(sent.text || '').trim();
+          if (!txt) continue;
+          if (lang === 'eng' || lang === 'en') {
+            if (!engSent) engSent = txt;
+          } else if (!targetSent) {
+            targetSent = txt;
+          }
+        }
+        if (!targetSent || !engSent) continue;
+
+        const linkedWords = Array.from(
+          new Set([
+            ...(ex.text ? [String(ex.text).trim()] : []),
+            ...kanjiHeadwords,
+            ...kanaReadings,
+          ].filter(Boolean))
+        );
+
+        out.push({
+          sentence: targetSent,
+          translation: engSent,
+          word: linkedWords.length > 0 ? linkedWords.join('|') : undefined,
+          reading: kanaReadings[0] || undefined,
+        });
+        if (limit !== undefined && out.length >= limit) return out;
       }
     }
+    return out;
   }
-  return Array.from(out).slice(0, 40);
+
+  // 2. Direct Tatoeba / sentence-pair object
+  let sentence = String(
+    obj.sentence ?? obj.original ?? obj.target ?? obj.japanese ?? obj.jpn ?? ''
+  ).trim();
+  let translation = String(
+    obj.translation ?? obj.english ?? obj.meaning ?? obj.gloss ?? obj.eng ?? ''
+  ).trim();
+
+  if ((!sentence || !translation) && Array.isArray(obj.sentences)) {
+    for (const sent of obj.sentences) {
+      if (!sent || typeof sent !== 'object') continue;
+      const lang = String(sent.lang || '').toLowerCase();
+      const txt = String(sent.text || '').trim();
+      if (!txt) continue;
+      if ((lang === 'eng' || lang === 'en') && !translation) translation = txt;
+      else if (!sentence) sentence = txt;
+    }
+  }
+  if (!sentence && typeof obj.text === 'string' && translation) {
+    sentence = obj.text.trim();
+  }
+
+  if (sentence && translation) {
+    const word = obj.word
+      ? String(obj.word).trim()
+      : obj.lemma
+      ? String(obj.lemma).trim()
+      : undefined;
+    const reading = obj.reading ? String(obj.reading).trim() : undefined;
+    out.push({ sentence, translation, word, reading });
+  }
+
+  return out;
 }
+
+function extractFrequencyRowFromJsonItem(
+  it: unknown,
+  fallbackRank: number
+): ParsedFrequencyCsvRow | null {
+  if (typeof it === 'string') {
+    const w = it.trim();
+    return w ? { word: w, rank: fallbackRank } : null;
+  }
+  if (Array.isArray(it) && it.length >= 1) {
+    const word = String(it[0] ?? '').trim();
+    const rank = Number(it[1] ?? fallbackRank);
+    return word && Number.isFinite(rank) && rank > 0
+      ? { word, rank: Math.round(rank) }
+      : null;
+  }
+  if (!it || typeof it !== 'object') return null;
+  const obj = it as Record<string, any>;
+  const word = String(obj.word ?? obj.term ?? obj.expression ?? obj.w ?? '').trim();
+  const form = obj.form ?? obj.reading ? String(obj.form ?? obj.reading).trim() : undefined;
+  const rank = Number(obj.rank ?? obj.frequencyRank ?? obj.frequency ?? obj.f ?? fallbackRank);
+  return word && Number.isFinite(rank) && rank > 0
+    ? { word, rank: Math.round(rank), form: form && form !== word ? form : undefined }
+    : null;
+}
+
+type ParsedCategoryPayload =
+  | { kind: 'dict'; entries: RawPackEntryInput[]; forms: Record<string, string[]> }
+  | { kind: 'kanji'; rows: ParsedKanjiCsvRow[] }
+  | { kind: 'examples'; rows: ParsedExampleCsvRow[] }
+  | { kind: 'frequency'; rows: ParsedFrequencyCsvRow[] };
+
+function parseJsonLines<T>(
+  text: string,
+  pack: BundledPackDefinition,
+  filePath: string,
+  httpStatus: number | undefined,
+  detectedLabel: string,
+  maxRows: number | undefined,
+  mapper: (item: unknown, index: number) => T | T[] | null
+): T[] {
+  const out: T[] = [];
+  const lines = text.split(/\r?\n/);
+  let lineNum = 0;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    lineNum++;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch (err: any) {
+      throw new PackLoadError({
+        packTitle: pack.title,
+        filePath,
+        httpStatus,
+        detectedFormat: detectedLabel,
+        reason: `Invalid JSONL on line ${lineNum}: ${err?.message || 'parse error'}`,
+      });
+    }
+
+    const res = mapper(parsed, out.length);
+    if (Array.isArray(res)) {
+      for (const item of res) {
+        out.push(item);
+        if (maxRows !== undefined && out.length >= maxRows) return out;
+      }
+    } else if (res) {
+      out.push(res);
+      if (maxRows !== undefined && out.length >= maxRows) return out;
+    }
+  }
+  return out;
+}
+
+function parsePackContentForCategory(opts: {
+  pack: BundledPackDefinition;
+  detected: ContentDetectionResult;
+  fileName: string;
+  filePath: string;
+  httpStatus?: number;
+  maxRows?: number;
+}): ParsedCategoryPayload {
+  const { pack, detected, fileName, filePath, httpStatus, maxRows } = opts;
+  const fmt = detected.format;
+
+  if (fmt !== 'json' && fmt !== 'jsonl' && fmt !== 'csv' && fmt !== 'tsv') {
+    throw new PackLoadError({
+      packTitle: pack.title,
+      filePath,
+      httpStatus,
+      detectedFormat: detected.detectedLabel,
+      reason: `Unsupported pack content format (${detected.detectedLabel}).`,
+    });
+  }
+
+  const parseJsonSafe = (): unknown => {
+    try {
+      return JSON.parse(detected.text);
+    } catch (err: any) {
+      throw new PackLoadError({
+        packTitle: pack.title,
+        filePath,
+        httpStatus,
+        detectedFormat: detected.detectedLabel,
+        reason: err?.message || 'Invalid JSON syntax.',
+      });
+    }
+  };
+
+  // 1. Dictionary categories (core-dict / common-dict)
+  if (pack.category === 'core-dict' || pack.category === 'common-dict') {
+    if (fmt === 'json') {
+      const parsed = parseJsonSafe();
+      try {
+        const extracted = extractRawPackDataFromParsedJson(parsed, maxRows);
+        return { kind: 'dict', entries: extracted.entries, forms: extracted.forms };
+      } catch (err: any) {
+        throw new PackLoadError({
+          packTitle: pack.title,
+          filePath,
+          httpStatus,
+          detectedFormat: detected.detectedLabel,
+          reason: err?.message || 'Unexpected dictionary JSON structure.',
+        });
+      }
+    }
+    if (fmt === 'jsonl') {
+      const entries = parseJsonLines(
+        detected.text,
+        pack,
+        filePath,
+        httpStatus,
+        detected.detectedLabel,
+        maxRows,
+        (item) => normalizeRawPackItem(item, 'dictionary')
+      );
+      return { kind: 'dict', entries, forms: {} };
+    }
+    // csv / tsv
+    const table = parseDelimitedPackTable(detected.text, fileName, pack.category, maxRows);
+    const dictRows = extractDictRowsFromTable(table, pack.columnMapping);
+    return {
+      kind: 'dict',
+      entries: dictRows.map((r) => ({
+        word: r.word,
+        readings: r.readings,
+        meanings: r.meanings,
+        partsOfSpeech: r.partsOfSpeech,
+        level: r.level,
+        frequencyRank: r.frequencyRank,
+      })),
+      forms: {},
+    };
+  }
+
+  // 2. Kanji & JLPT Levels
+  if (pack.category === 'kanji-levels') {
+    const inferredLevel = inferLevelFromFileName(fileName);
+    if (fmt === 'json') {
+      const parsed = parseJsonSafe() as any;
+      const rows: ParsedKanjiCsvRow[] = [];
+      const arr = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.entries)
+        ? parsed.entries
+        : Array.isArray(parsed?.kanji)
+        ? parsed.kanji
+        : Array.isArray(parsed?.items)
+        ? parsed.items
+        : Array.isArray(parsed?.words)
+        ? parsed.words
+        : Array.isArray(parsed?.data)
+        ? parsed.data
+        : null;
+
+      if (arr) {
+        for (const item of arr) {
+          if (typeof item === 'string') {
+            const ch = item.normalize('NFC').trim();
+            if (ch && SINGLE_KANJI_REGEX.test(ch)) {
+              rows.push({
+                character: ch,
+                jlptLevel: inferredLevel || 'No level',
+                meanings: [],
+                onReadings: [],
+                kunReadings: [],
+              });
+            }
+          } else if (item && typeof item === 'object') {
+            const r = extractKanjiRowFromJsonItem(item, inferredLevel);
+            if (r) rows.push(r);
+          }
+          if (maxRows !== undefined && rows.length >= maxRows) break;
+        }
+      } else if (parsed && typeof parsed === 'object') {
+        for (const [ch, val] of Object.entries(parsed)) {
+          const clean = ch.normalize('NFC').trim();
+          if (!clean || !SINGLE_KANJI_REGEX.test(clean)) continue;
+          if (val && typeof val === 'object' && !Array.isArray(val)) {
+            const r = extractKanjiRowFromJsonItem({ character: clean, ...val }, inferredLevel);
+            if (r) rows.push(r);
+          } else {
+            rows.push({
+              character: clean,
+              jlptLevel: resolveRowJlptLevel(val, inferredLevel),
+              meanings: [],
+              onReadings: [],
+              kunReadings: [],
+            });
+          }
+          if (maxRows !== undefined && rows.length >= maxRows) break;
+        }
+      }
+      return { kind: 'kanji', rows };
+    }
+
+    if (fmt === 'jsonl') {
+      const rows = parseJsonLines(
+        detected.text,
+        pack,
+        filePath,
+        httpStatus,
+        detected.detectedLabel,
+        maxRows,
+        (item) =>
+          item && typeof item === 'object'
+            ? extractKanjiRowFromJsonItem(item as Record<string, any>, inferredLevel)
+            : null
+      );
+      return { kind: 'kanji', rows };
+    }
+
+    // csv / tsv
+    const table = parseDelimitedPackTable(detected.text, fileName, 'kanji-levels', maxRows);
+    let rows = extractKanjiRowsFromTable(table, fileName, pack.columnMapping);
+    if (rows.length === 0 && !pack.columnMapping) {
+      // Fallback to kanjiListParser heuristic auto-detection for unconventional column headers
+      const kTable = parseKanjiListTable(detected.text, fileName);
+      const km = kTable.detectedMapping;
+      rows = extractKanjiRowsFromTable(
+        {
+          delimiter: kTable.format === 'tsv' ? '\t' : ',',
+          headers: kTable.headers,
+          hasHeaderRow: kTable.hasHeaderRow,
+          rows: maxRows !== undefined ? kTable.rows.slice(0, maxRows) : kTable.rows,
+        },
+        fileName,
+        {
+          character: km.charCol,
+          level: km.levelCol,
+          reading: km.readingCol,
+          onyomi: km.onCol,
+          kunyomi: km.kunCol,
+          meaning: km.meaningCol,
+          strokes: km.strokeCol,
+        }
+      );
+    }
+    return { kind: 'kanji', rows };
+  }
+
+  // 3. Examples
+  if (pack.category === 'examples') {
+    if (fmt === 'json') {
+      const parsed = parseJsonSafe() as any;
+      const rows: ParsedExampleCsvRow[] = [];
+      const arr = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.examples)
+        ? parsed.examples
+        : Array.isArray(parsed?.entries)
+        ? parsed.entries
+        : Array.isArray(parsed?.sentences)
+        ? parsed.sentences
+        : Array.isArray(parsed?.items)
+        ? parsed.items
+        : Array.isArray(parsed?.words)
+        ? parsed.words
+        : null;
+
+      if (arr) {
+        for (const item of arr) {
+          const remaining = maxRows !== undefined ? maxRows - rows.length : undefined;
+          if (remaining !== undefined && remaining <= 0) break;
+          const extracted = extractExamplesFromJsonItem(item, remaining);
+          for (const ex of extracted) {
+            rows.push(ex);
+            if (maxRows !== undefined && rows.length >= maxRows) break;
+          }
+          if (maxRows !== undefined && rows.length >= maxRows) break;
+        }
+      }
+      return { kind: 'examples', rows };
+    }
+
+    if (fmt === 'jsonl') {
+      const rows = parseJsonLines(
+        detected.text,
+        pack,
+        filePath,
+        httpStatus,
+        detected.detectedLabel,
+        maxRows,
+        (item) => extractExamplesFromJsonItem(item)
+      );
+      return { kind: 'examples', rows };
+    }
+
+    // csv / tsv
+    const table = parseDelimitedPackTable(detected.text, fileName, 'examples', maxRows);
+    const rows = extractExampleRowsFromTable(table, pack.columnMapping);
+    return { kind: 'examples', rows };
+  }
+
+  // 4. Frequency
+  if (fmt === 'json') {
+    const parsed = parseJsonSafe() as any;
+    const rows: ParsedFrequencyCsvRow[] = [];
+    if (Array.isArray(parsed)) {
+      for (let i = 0; i < parsed.length; i++) {
+        const row = extractFrequencyRowFromJsonItem(parsed[i], i + 1);
+        if (row) rows.push(row);
+        if (maxRows !== undefined && rows.length >= maxRows) break;
+      }
+    } else if (parsed && typeof parsed === 'object') {
+      const arr = parsed.entries || parsed.words || parsed.items;
+      if (Array.isArray(arr)) {
+        for (let i = 0; i < arr.length; i++) {
+          const row = extractFrequencyRowFromJsonItem(arr[i], i + 1);
+          if (row) rows.push(row);
+          if (maxRows !== undefined && rows.length >= maxRows) break;
+        }
+      } else {
+        for (const [w, r] of Object.entries(parsed)) {
+          const rankNum = Number(r);
+          if (w.trim() && Number.isFinite(rankNum) && rankNum > 0) {
+            rows.push({ word: w.trim(), rank: Math.round(rankNum) });
+            if (maxRows !== undefined && rows.length >= maxRows) break;
+          }
+        }
+      }
+    }
+    return { kind: 'frequency', rows };
+  }
+
+  if (fmt === 'jsonl') {
+    const rows = parseJsonLines(
+      detected.text,
+      pack,
+      filePath,
+      httpStatus,
+      detected.detectedLabel,
+      maxRows,
+      (item, idx) => extractFrequencyRowFromJsonItem(item, idx + 1)
+    );
+    return { kind: 'frequency', rows };
+  }
+
+  // csv / tsv
+  const table = parseDelimitedPackTable(detected.text, fileName, 'frequency', maxRows);
+  const rows = extractFrequencyRowsFromTable(table, pack.columnMapping);
+  return { kind: 'frequency', rows };
+}
+
+function getPayloadRowCount(payload: ParsedCategoryPayload): number {
+  if (payload.kind === 'dict') return payload.entries.length;
+  return payload.rows.length;
+}
+
+// ---------------------------------------------------------------------------
+// Category Importers
+// ---------------------------------------------------------------------------
 
 async function importDictBundle(
   pack: BundledPackDefinition,
-  text: string,
-  sizeBytes: number,
+  detected: ContentDetectionResult,
   fileName: string,
+  filePath: string,
+  httpStatus: number | undefined,
   signal?: AbortSignal
 ): Promise<number> {
   const importId = `bundle-${pack.id}`;
-  const trimmed = text.trim();
-  const isJson =
-    pack.fileFormat === 'json' ||
-    pack.fileFormat === 'json.gz' ||
-    trimmed.startsWith('{') ||
-    trimmed.startsWith('[');
-
-  let rawEntries: Array<{
-    id?: string;
-    word: string;
-    traditionalForm?: string;
-    readings?: string[];
-    meanings: string[];
-    partsOfSpeech?: string[];
-    level?: string;
-    frequencyRank?: number;
-  }> = [];
-  let formsMap: Record<string, string[]> = {};
-
-  if (isJson) {
-    const parsed = JSON.parse(trimmed);
-    const extracted = extractRawPackDataFromParsedJson(parsed);
-    rawEntries = extracted.entries;
-    formsMap = extracted.forms;
-  } else {
-    const table = parseDelimitedPackTable(trimmed, fileName, pack.category);
-    const dictRows: ParsedDictCsvRow[] = extractDictRowsFromTable(table, pack.columnMapping);
-    rawEntries = dictRows.map((r) => ({
-      word: r.word,
-      readings: r.readings,
-      meanings: r.meanings,
-      partsOfSpeech: r.partsOfSpeech,
-      level: r.level,
-      frequencyRank: r.frequencyRank,
-    }));
+  const parsed = parsePackContentForCategory({
+    pack,
+    detected,
+    fileName,
+    filePath,
+    httpStatus,
+  });
+  if (parsed.kind !== 'dict' || parsed.entries.length === 0) {
+    throw new PackLoadError({
+      packTitle: pack.title,
+      filePath,
+      httpStatus,
+      detectedFormat: detected.detectedLabel,
+      reason: 'No valid vocabulary entries found.',
+    });
   }
 
-  if (rawEntries.length === 0) {
-    throw new Error(`No valid vocabulary entries found in "${pack.title}".`);
-  }
-
-  // Delete any prior version of this exact bundle import first so updates are clean
   await deleteImportInBatches(importId).catch(() => {});
 
-  const items = normalizeEntriesToJmdictItems(pack.languageId, importId, rawEntries, 'dictionary');
+  const items = normalizeEntriesToJmdictItems(pack.languageId, importId, parsed.entries, 'dictionary');
   const BATCH_SIZE = 1500;
   for (let i = 0; i < items.length; i += BATCH_SIZE) {
     throwIfAborted(signal);
     await db.jmdictEntries.bulkPut(items.slice(i, i + BATCH_SIZE));
   }
 
-  if (Object.keys(formsMap).length > 0) {
-    await storePackFormsInBatches(pack.languageId, formsMap, signal);
+  if (Object.keys(parsed.forms).length > 0) {
+    await storePackFormsInBatches(pack.languageId, parsed.forms, signal);
   }
 
   if (pack.languageId === 'zh') {
@@ -982,8 +1607,8 @@ async function importDictBundle(
     languageCode: pack.languageId,
     kind: 'dictionary',
     fileName,
-    fileSize: sizeBytes,
-    fingerprint: `${importId}-${items.length}-${sizeBytes}`,
+    fileSize: detected.sizeBytes,
+    fingerprint: `${importId}-${items.length}-${detected.sizeBytes}`,
     date: now,
     entryCount: items.length,
     version: pack.version || '1.0.0',
@@ -1004,8 +1629,9 @@ async function importDictBundle(
     installedAt: existingPack?.installedAt || now,
     updatedAt: now,
     source: existingPack?.source || 'bundled',
+    status: existingPack?.status === 'partial' && pack.category !== 'core-dict' ? 'partial' : 'installed',
     entryCount: totalCount,
-    sizeBytes: (existingPack?.sizeBytes || 0) + sizeBytes,
+    sizeBytes: (existingPack?.sizeBytes || 0) + detected.sizeBytes,
     subpacks: Array.from(new Set([...(existingPack?.subpacks || []), pack.id])),
     manifestUrl: existingPack?.manifestUrl,
   });
@@ -1019,6 +1645,9 @@ async function importDictBundle(
     installedAt: now,
     entryCount: items.length,
     version: pack.version || '1.0.0',
+    status: 'installed',
+    isFullDictionary: pack.category === 'core-dict',
+    warning: detected.mismatchWarning,
   });
 
   return items.length;
@@ -1026,89 +1655,28 @@ async function importDictBundle(
 
 async function importKanjiLevelsBundle(
   pack: BundledPackDefinition,
-  text: string,
-  sizeBytes: number,
+  detected: ContentDetectionResult,
   fileName: string,
+  filePath: string,
+  httpStatus: number | undefined,
   signal?: AbortSignal
 ): Promise<number> {
   const importId = `bundle-${pack.id}`;
-  const trimmed = text.trim();
-  let rows: ParsedKanjiCsvRow[] = [];
-
-  if (
-    pack.fileFormat === 'json' ||
-    pack.fileFormat === 'json.gz' ||
-    trimmed.startsWith('{') ||
-    trimmed.startsWith('[')
-  ) {
-    const parsed = JSON.parse(trimmed);
-    const arr = Array.isArray(parsed)
-      ? parsed
-      : Array.isArray(parsed?.entries)
-      ? parsed.entries
-      : Array.isArray(parsed?.kanji)
-      ? parsed.kanji
-      : Array.isArray(parsed?.items)
-      ? parsed.items
-      : null;
-
-    if (arr) {
-      for (const item of arr) {
-        if (!item || typeof item !== 'object') continue;
-        const ch = String(item.character ?? item.kanji ?? item.char ?? '').normalize('NFC').trim();
-        if (!ch) continue;
-        const rawLvl = String(item.jlptLevel ?? item.jlpt ?? item.level ?? '').trim();
-        const lvlMatch = rawLvl.match(/([1-5])/);
-        const jlptLevel = lvlMatch ? `N${lvlMatch[1]}` : 'No level';
-        const meanings = Array.isArray(item.meanings)
-          ? item.meanings.map((m: any) => String(m).trim()).filter(Boolean)
-          : typeof item.meaning === 'string'
-          ? item.meaning.split(/[;|,]+/).map((s: string) => s.trim()).filter(Boolean)
-          : [];
-        const onReadings = Array.isArray(item.readings?.on)
-          ? item.readings.on
-          : Array.isArray(item.onyomi)
-          ? item.onyomi
-          : typeof item.onyomi === 'string'
-          ? item.onyomi.split(/[,;/\s]+/).filter(Boolean)
-          : [];
-        const kunReadings = Array.isArray(item.readings?.kun)
-          ? item.readings.kun
-          : Array.isArray(item.kunyomi)
-          ? item.kunyomi
-          : typeof item.kunyomi === 'string'
-          ? item.kunyomi.split(/[,;/\s]+/).filter(Boolean)
-          : [];
-        rows.push({
-          character: ch,
-          jlptLevel,
-          meanings,
-          onReadings,
-          kunReadings,
-          strokeCount: typeof item.strokeCount === 'number' ? item.strokeCount : undefined,
-        });
-      }
-    } else if (parsed && typeof parsed === 'object') {
-      for (const [ch, val] of Object.entries(parsed)) {
-        const clean = ch.normalize('NFC').trim();
-        if (!clean) continue;
-        const lvlMatch = String(val).match(/([1-5])/);
-        rows.push({
-          character: clean,
-          jlptLevel: lvlMatch ? `N${lvlMatch[1]}` : 'No level',
-          meanings: [],
-          onReadings: [],
-          kunReadings: [],
-        });
-      }
-    }
-  } else {
-    const table = parseDelimitedPackTable(trimmed, fileName, 'kanji-levels');
-    rows = extractKanjiRowsFromTable(table, fileName, pack.columnMapping);
-  }
-
-  if (rows.length === 0) {
-    throw new Error(`No valid kanji entries found in "${pack.title}".`);
+  const parsed = parsePackContentForCategory({
+    pack,
+    detected,
+    fileName,
+    filePath,
+    httpStatus,
+  });
+  if (parsed.kind !== 'kanji' || parsed.rows.length === 0) {
+    throw new PackLoadError({
+      packTitle: pack.title,
+      filePath,
+      httpStatus,
+      detectedFormat: detected.detectedLabel,
+      reason: 'No valid kanji entries found.',
+    });
   }
 
   await deleteImportInBatches(importId).catch(() => {});
@@ -1118,7 +1686,7 @@ async function importKanjiLevelsBundle(
   for (const e of existingEntries) existingMap.set(e.character, e);
 
   const batchMap = new Map<string, KanjiEntryItem>();
-  for (const r of rows) {
+  for (const r of parsed.rows) {
     const existing = batchMap.get(r.character) || existingMap.get(r.character);
     if (existing) {
       if (isEasierLevel(r.jlptLevel, existing.jlptLevel)) {
@@ -1174,8 +1742,8 @@ async function importKanjiLevelsBundle(
     languageCode: pack.languageId,
     kind: 'kanji-levels',
     fileName,
-    fileSize: sizeBytes,
-    fingerprint: `${importId}-${allKanji.length}-${sizeBytes}`,
+    fileSize: detected.sizeBytes,
+    fingerprint: `${importId}-${allKanji.length}-${detected.sizeBytes}`,
     date: now,
     entryCount: allKanji.length,
     version: pack.version || '1.0.0',
@@ -1190,71 +1758,73 @@ async function importKanjiLevelsBundle(
     installedAt: now,
     entryCount: allKanji.length,
     version: pack.version || '1.0.0',
+    status: 'installed',
+    warning: detected.mismatchWarning,
   });
 
   return allKanji.length;
 }
 
+function extractWordsFromSentence(sentence: string, languageId = 'en'): string[] {
+  const out = new Set<string>();
+  const trimmed = sentence.trim();
+  if (!trimmed) return [];
+
+  if (typeof Intl !== 'undefined' && typeof (Intl as any).Segmenter === 'function') {
+    try {
+      const seg = new (Intl as any).Segmenter(languageId, { granularity: 'word' });
+      for (const part of seg.segment(trimmed)) {
+        if (part.isWordLike) {
+          const w = String(part.segment).trim();
+          if (w) {
+            out.add(w);
+            out.add(w.toLowerCase());
+          }
+        }
+      }
+      if (out.size > 0) return Array.from(out);
+    } catch {
+      // Fallback to regex tokenization
+    }
+  }
+
+  const matches = trimmed.match(/[\p{L}\p{N}ー'-]+/gu) || [];
+  for (const m of matches) {
+    out.add(m);
+    out.add(m.toLowerCase());
+  }
+  return Array.from(out);
+}
+
 async function importExamplesBundle(
   pack: BundledPackDefinition,
-  text: string,
-  sizeBytes: number,
+  detected: ContentDetectionResult,
   fileName: string,
+  filePath: string,
+  httpStatus: number | undefined,
   signal?: AbortSignal
 ): Promise<number> {
   const importId = `bundle-${pack.id}`;
-  const trimmed = text.trim();
-  let rows: ParsedExampleCsvRow[] = [];
-
-  if (
-    pack.fileFormat === 'json' ||
-    pack.fileFormat === 'json.gz' ||
-    trimmed.startsWith('{') ||
-    trimmed.startsWith('[')
-  ) {
-    const parsed = JSON.parse(trimmed);
-    const arr = Array.isArray(parsed)
-      ? parsed
-      : Array.isArray(parsed?.examples)
-      ? parsed.examples
-      : Array.isArray(parsed?.entries)
-      ? parsed.entries
-      : Array.isArray(parsed?.sentences)
-      ? parsed.sentences
-      : Array.isArray(parsed?.items)
-      ? parsed.items
-      : null;
-
-    if (arr) {
-      for (const item of arr) {
-        if (!item || typeof item !== 'object') continue;
-        const sentence = String(
-          item.sentence ?? item.original ?? item.target ?? item.text ?? item.japanese ?? ''
-        ).trim();
-        const translation = String(
-          item.translation ?? item.english ?? item.meaning ?? item.gloss ?? ''
-        ).trim();
-        if (!sentence || !translation) continue;
-        rows.push({
-          sentence,
-          translation,
-          word: item.word ? String(item.word).trim() : item.lemma ? String(item.lemma).trim() : undefined,
-          reading: item.reading ? String(item.reading).trim() : undefined,
-        });
-      }
-    }
-  } else {
-    const table = parseDelimitedPackTable(trimmed, fileName, 'examples');
-    rows = extractExampleRowsFromTable(table, pack.columnMapping);
-  }
-
-  if (rows.length === 0) {
-    throw new Error(`No valid example sentence pairs found in "${pack.title}".`);
+  const parsed = parsePackContentForCategory({
+    pack,
+    detected,
+    fileName,
+    filePath,
+    httpStatus,
+  });
+  if (parsed.kind !== 'examples' || parsed.rows.length === 0) {
+    throw new PackLoadError({
+      packTitle: pack.title,
+      filePath,
+      httpStatus,
+      detectedFormat: detected.detectedLabel,
+      reason: 'No valid example sentence pairs found.',
+    });
   }
 
   await deleteImportInBatches(importId).catch(() => {});
 
-  const items: JmdictEntryItem[] = rows.map((r, idx) => {
+  const items: JmdictEntryItem[] = parsed.rows.map((r, idx) => {
     const linkedForms = new Set<string>();
     if (r.word) {
       for (const w of r.word.split(/[;|]+/).map((s) => s.trim()).filter(Boolean)) {
@@ -1262,7 +1832,7 @@ async function importExamplesBundle(
         linkedForms.add(w.toLowerCase());
       }
     } else {
-      for (const w of extractWordsFromSentence(r.sentence)) {
+      for (const w of extractWordsFromSentence(r.sentence, pack.languageId)) {
         linkedForms.add(w);
       }
     }
@@ -1295,8 +1865,8 @@ async function importExamplesBundle(
     languageCode: pack.languageId,
     kind: 'sentences',
     fileName,
-    fileSize: sizeBytes,
-    fingerprint: `${importId}-${items.length}-${sizeBytes}`,
+    fileSize: detected.sizeBytes,
+    fingerprint: `${importId}-${items.length}-${detected.sizeBytes}`,
     date: now,
     entryCount: items.length,
     version: pack.version || '1.0.0',
@@ -1311,6 +1881,8 @@ async function importExamplesBundle(
     installedAt: now,
     entryCount: items.length,
     version: pack.version || '1.0.0',
+    status: 'installed',
+    warning: detected.mismatchWarning,
   });
 
   return items.length;
@@ -1318,56 +1890,28 @@ async function importExamplesBundle(
 
 async function importFrequencyBundle(
   pack: BundledPackDefinition,
-  text: string,
-  sizeBytes: number,
+  detected: ContentDetectionResult,
   fileName: string,
+  filePath: string,
+  httpStatus: number | undefined,
   signal?: AbortSignal
 ): Promise<number> {
   const importId = `bundle-${pack.id}`;
-  const trimmed = text.trim();
-  let rows: ParsedFrequencyCsvRow[] = [];
-
-  if (
-    pack.fileFormat === 'json' ||
-    pack.fileFormat === 'json.gz' ||
-    trimmed.startsWith('{') ||
-    trimmed.startsWith('[')
-  ) {
-    const parsed = JSON.parse(trimmed);
-    if (Array.isArray(parsed)) {
-      rows = parsed
-        .map((it: any, idx: number) => {
-          if (typeof it === 'string') return { word: it.trim(), rank: idx + 1 };
-          if (!it || typeof it !== 'object') return null;
-          const word = String(it.word ?? it.term ?? it.expression ?? it.w ?? '').trim();
-          const rank = Number(it.rank ?? it.frequencyRank ?? it.frequency ?? it.f ?? idx + 1);
-          return word && Number.isFinite(rank) && rank > 0 ? { word, rank: Math.round(rank) } : null;
-        })
-        .filter((x): x is ParsedFrequencyCsvRow => Boolean(x));
-    } else if (parsed && typeof parsed === 'object') {
-      const arr = parsed.entries || parsed.words || parsed.items;
-      if (Array.isArray(arr)) {
-        rows = arr
-          .map((it: any, idx: number) => {
-            if (typeof it === 'string') return { word: it.trim(), rank: idx + 1 };
-            const word = String(it?.word ?? it?.term ?? it?.expression ?? it?.w ?? '').trim();
-            const rank = Number(it?.rank ?? it?.frequencyRank ?? it?.frequency ?? it?.f ?? idx + 1);
-            return word && Number.isFinite(rank) && rank > 0 ? { word, rank: Math.round(rank) } : null;
-          })
-          .filter((x): x is ParsedFrequencyCsvRow => Boolean(x));
-      } else {
-        rows = Object.entries(parsed)
-          .map(([w, r]) => ({ word: w.trim(), rank: Number(r) }))
-          .filter((x) => Boolean(x.word) && Number.isFinite(x.rank) && x.rank > 0);
-      }
-    }
-  } else {
-    const table = parseDelimitedPackTable(trimmed, fileName, 'frequency');
-    rows = extractFrequencyRowsFromTable(table, pack.columnMapping);
-  }
-
-  if (rows.length === 0) {
-    throw new Error(`No valid frequency entries found in "${pack.title}".`);
+  const parsed = parsePackContentForCategory({
+    pack,
+    detected,
+    fileName,
+    filePath,
+    httpStatus,
+  });
+  if (parsed.kind !== 'frequency' || parsed.rows.length === 0) {
+    throw new PackLoadError({
+      packTitle: pack.title,
+      filePath,
+      httpStatus,
+      detectedFormat: detected.detectedLabel,
+      reason: 'No valid frequency entries found.',
+    });
   }
 
   await deleteImportInBatches(importId).catch(() => {});
@@ -1389,12 +1933,15 @@ async function importFrequencyBundle(
   }
 
   const updatedEntries = new Map<string, JmdictEntryItem>();
-  for (const item of rows) {
+  for (const item of parsed.rows) {
     throwIfAborted(signal);
     const matches =
       entriesByForm.get(item.word.toLowerCase()) ||
       entriesByForm.get(item.word) ||
+      (item.form ? entriesByForm.get(item.form.toLowerCase()) || entriesByForm.get(item.form) : undefined) ||
       [];
+    if (matches.length === 0) continue;
+
     const band = deriveBandFromRank(item.rank);
     const levelGuess = mapFrequencyRankToLevel(pack.languageId, item.rank);
 
@@ -1429,10 +1976,10 @@ async function importFrequencyBundle(
     languageCode: pack.languageId,
     kind: 'frequency',
     fileName,
-    fileSize: sizeBytes,
-    fingerprint: `${importId}-${rows.length}-${sizeBytes}`,
+    fileSize: detected.sizeBytes,
+    fingerprint: `${importId}-${parsed.rows.length}-${detected.sizeBytes}`,
     date: now,
-    entryCount: rows.length,
+    entryCount: parsed.rows.length,
     version: pack.version || '1.0.0',
     description: pack.title,
   });
@@ -1443,11 +1990,121 @@ async function importFrequencyBundle(
     category: pack.category,
     importId,
     installedAt: now,
-    entryCount: rows.length,
+    entryCount: parsed.rows.length,
     version: pack.version || '1.0.0',
+    status: 'installed',
+    warning: detected.mismatchWarning,
   });
 
-  return rows.length;
+  return parsed.rows.length;
+}
+
+// ---------------------------------------------------------------------------
+// Deduplication Helpers (Subset Coverage & Manual Import Protection)
+// ---------------------------------------------------------------------------
+
+function mapCategoryToImportKinds(category: BundledPackCategory): ImportKind[] {
+  switch (category) {
+    case 'core-dict':
+    case 'common-dict':
+      return ['dictionary'];
+    case 'kanji-levels':
+      return ['kanji-levels', 'kanji'];
+    case 'examples':
+      return ['sentences'];
+    case 'frequency':
+      return ['frequency'];
+  }
+}
+
+function normalizeBasenameForCompare(fileName: string): string {
+  return (fileName || '')
+    .split('?')[0]
+    .split('/')
+    .pop()!
+    .toLowerCase()
+    .replace(/\.(gz|zip)$/i, '');
+}
+
+export async function isFullDictionaryInstalledForLanguage(
+  languageId: string
+): Promise<{ installed: boolean; coveredBy?: string }> {
+  const installedBundles = await getInstalledBundledPacksMap();
+  for (const status of Object.values(installedBundles)) {
+    if (
+      status.languageId === languageId &&
+      status.category === 'core-dict' &&
+      status.status !== 'covered' &&
+      (status.isFullDictionary === true ||
+        status.entryCount >= 5000 ||
+        status.importId.endsWith('-cloud'))
+    ) {
+      return { installed: true, coveredBy: status.packId };
+    }
+  }
+
+  const imports = await db.imports.where('languageCode').equals(languageId).toArray();
+  for (const imp of imports) {
+    if (imp.kind !== 'dictionary') continue;
+    const isManualFull =
+      !imp.importId.startsWith('bundle-') &&
+      !imp.importId.startsWith('pack-') &&
+      (imp.entryCount >= 5000 || /jmdict/i.test(imp.fileName));
+    const isCloudFull =
+      imp.importId === `pack-${languageId}-cloud` ||
+      (imp.importId.startsWith('bundle-') &&
+        !imp.importId.includes('common') &&
+        imp.entryCount >= 5000);
+    if (isManualFull || isCloudFull) {
+      return { installed: true, coveredBy: imp.description || imp.fileName };
+    }
+  }
+
+  return { installed: false };
+}
+
+export async function findManualDuplicateForPack(
+  pack: BundledPackDefinition
+): Promise<ImportRecord | null> {
+  const imports = await db.imports.where('languageCode').equals(pack.languageId).toArray();
+  const manualImports = imports.filter(
+    (imp) => !imp.importId.startsWith('bundle-') && !imp.importId.startsWith('pack-')
+  );
+  if (manualImports.length === 0) return null;
+
+  const packFile = normalizeBasenameForCompare(pack.url || pack.title);
+  const packInferredLevel = inferLevelFromFileName(pack.url || pack.title);
+  const validKinds = new Set<ImportKind>(mapCategoryToImportKinds(pack.category));
+
+  for (const imp of manualImports) {
+    if (imp.entryCount <= 0) continue;
+    const impFile = normalizeBasenameForCompare(imp.fileName);
+    if (packFile && impFile && impFile === packFile) {
+      return imp;
+    }
+
+    if (!validKinds.has(imp.kind)) continue;
+
+    if (pack.category === 'core-dict' || pack.category === 'common-dict') {
+      return imp;
+    }
+
+    if (pack.category === 'kanji-levels') {
+      const impInferredLevel = inferLevelFromFileName(imp.fileName);
+      // Skip if manual import covers all JLPT levels (>=1000 kanji) or matches the same JLPT level
+      if (imp.entryCount >= 1000 || !packInferredLevel || impInferredLevel === packInferredLevel) {
+        return imp;
+      }
+      continue;
+    }
+
+    // examples / frequency
+    if (imp.entryCount >= 100 || !impFile || !packFile) {
+      return imp;
+    }
+  }
+
+  return null;
 }
 
 export async function installSingleBundledPack(
@@ -1455,11 +2112,57 @@ export async function installSingleBundledPack(
   options?: {
     signal?: AbortSignal;
     mode?: 'auto' | 'cloud-strict' | 'starter';
+    overwriteManualImports?: boolean;
     onSubProgress?: (percent: number, stage: string) => void;
   }
-): Promise<{ entryCount: number; source: string }> {
+): Promise<{
+  entryCount: number;
+  source: string;
+  skipped?: BundledPackSkipped;
+  warning?: string;
+}> {
   const signal = options?.signal;
   throwIfAborted(signal);
+
+  // Deduplication 1: Skip manual import duplicates unless user explicitly opted in
+  if (!options?.overwriteManualImports) {
+    const manualDup = await findManualDuplicateForPack(pack);
+    if (manualDup) {
+      const skipped: BundledPackSkipped = {
+        pack,
+        reason: 'manual-duplicate',
+        details: `Skipped "${pack.title}": duplicates manual import "${manualDup.fileName}" (${manualDup.entryCount.toLocaleString()} entries).`,
+        existingImportId: manualDup.importId,
+      };
+      options?.onSubProgress?.(100, `Skipped (manual import exists): ${pack.title}`);
+      return { entryCount: 0, source: 'skipped-manual', skipped };
+    }
+  }
+
+  // Deduplication 2: Skip subset common-dict if full dictionary is already installed
+  if (pack.category === 'common-dict') {
+    const fullCheck = await isFullDictionaryInstalledForLanguage(pack.languageId);
+    if (fullCheck.installed) {
+      await markBundledPackInstalled({
+        packId: pack.id,
+        languageId: pack.languageId,
+        category: pack.category,
+        importId: 'covered',
+        installedAt: Date.now(),
+        entryCount: 0,
+        version: pack.version || '1.0.0',
+        status: 'covered',
+        coveredBy: fullCheck.coveredBy || 'Core Dictionary',
+      });
+      const skipped: BundledPackSkipped = {
+        pack,
+        reason: 'covered',
+        details: `Covered by installed full dictionary (${fullCheck.coveredBy || 'Core Dictionary'}).`,
+      };
+      options?.onSubProgress?.(100, `Covered by full dictionary: ${pack.title}`);
+      return { entryCount: 0, source: 'covered', skipped };
+    }
+  }
 
   if (pack.sourceType === 'cloud-v2' && pack.category === 'core-dict') {
     const res = await installLanguagePack(pack.languageId, {
@@ -1469,6 +2172,7 @@ export async function installSingleBundledPack(
         options?.onSubProgress?.(prog.percent, prog.stage);
       },
     });
+    const isFullDict = res.source === 'cloud';
     await markBundledPackInstalled({
       packId: pack.id,
       languageId: pack.languageId,
@@ -1477,28 +2181,30 @@ export async function installSingleBundledPack(
       installedAt: Date.now(),
       entryCount: res.entryCount,
       version: res.record.version,
+      status: 'installed',
+      isFullDictionary: isFullDict,
     });
     return { entryCount: res.entryCount, source: res.source };
   }
 
   options?.onSubProgress?.(20, `Loading ${pack.title}...`);
-  const { text, sizeBytes, fileName } = await loadBundledPackText(pack, signal);
+  const { detected, fileName, filePath, httpStatus } = await fetchAndDetectPackContent(pack, signal);
   throwIfAborted(signal);
   options?.onSubProgress?.(60, `Indexing ${pack.title}...`);
 
   let count = 0;
   if (pack.category === 'core-dict' || pack.category === 'common-dict') {
-    count = await importDictBundle(pack, text, sizeBytes, fileName, signal);
+    count = await importDictBundle(pack, detected, fileName, filePath, httpStatus, signal);
   } else if (pack.category === 'kanji-levels') {
-    count = await importKanjiLevelsBundle(pack, text, sizeBytes, fileName, signal);
+    count = await importKanjiLevelsBundle(pack, detected, fileName, filePath, httpStatus, signal);
   } else if (pack.category === 'examples') {
-    count = await importExamplesBundle(pack, text, sizeBytes, fileName, signal);
+    count = await importExamplesBundle(pack, detected, fileName, filePath, httpStatus, signal);
   } else if (pack.category === 'frequency') {
-    count = await importFrequencyBundle(pack, text, sizeBytes, fileName, signal);
+    count = await importFrequencyBundle(pack, detected, fileName, filePath, httpStatus, signal);
   }
 
   options?.onSubProgress?.(100, `Installed ${pack.title}`);
-  return { entryCount: count, source: pack.sourceType };
+  return { entryCount: count, source: pack.sourceType, warning: detected.mismatchWarning };
 }
 
 export async function installAllIncludedPacksForLanguage(
@@ -1506,11 +2212,12 @@ export async function installAllIncludedPacksForLanguage(
   options?: {
     signal?: AbortSignal;
     mode?: 'auto' | 'cloud-strict' | 'starter';
+    overwriteManualImports?: boolean;
     globOverride?: Record<string, string>;
     skipRemoteManifest?: boolean;
     onProgress?: (progress: LanguageBundleInstallProgress) => void;
   }
-): Promise<{ installedCount: number; totalEntries: number; packIds: string[] }> {
+): Promise<LanguageBundleInstallResult> {
   const signal = options?.signal;
   throwIfAborted(signal);
 
@@ -1520,14 +2227,26 @@ export async function installAllIncludedPacksForLanguage(
   });
 
   if (includedPacks.length === 0) {
-    // Ensure at least default starter / deck exists if developer excluded everything
     await ensureDefaultDeck(languageId);
-    return { installedCount: 0, totalEntries: 0, packIds: [] };
+    return {
+      languageId,
+      installedCount: 0,
+      totalPacks: 0,
+      totalEntries: 0,
+      packIds: [],
+      failedPacks: [],
+      skippedPacks: [],
+      warnings: [],
+      languageStatus: 'not-installed',
+    };
   }
 
   const total = includedPacks.length;
   let totalEntries = 0;
   const installedIds: string[] = [];
+  const failedPacks: BundledPackFailure[] = [];
+  const skippedPacks: BundledPackSkipped[] = [];
+  const warnings: string[] = [];
 
   for (let i = 0; i < total; i++) {
     throwIfAborted(signal);
@@ -1544,29 +2263,77 @@ export async function installAllIncludedPacksForLanguage(
       stage: `Installing ${i + 1} of ${total}: ${pack.title}...`,
     });
 
-    const res = await installSingleBundledPack(pack, {
-      signal,
-      mode: options?.mode ?? 'auto',
-      onSubProgress: (subPct) => {
-        const overall = Math.min(99, Math.round(stepBase + (subPct / 100) * stepSpan));
-        options?.onProgress?.({
-          languageId,
-          currentIndex: i + 1,
-          totalCount: total,
-          currentPack: pack,
-          percent: Math.max(3, overall),
-          stage: `Installing ${i + 1} of ${total}: ${pack.title}...`,
-        });
-      },
-    });
+    try {
+      const res = await installSingleBundledPack(pack, {
+        signal,
+        mode: options?.mode ?? 'auto',
+        overwriteManualImports: options?.overwriteManualImports,
+        onSubProgress: (subPct) => {
+          const overall = Math.min(99, Math.round(stepBase + (subPct / 100) * stepSpan));
+          options?.onProgress?.({
+            languageId,
+            currentIndex: i + 1,
+            totalCount: total,
+            currentPack: pack,
+            percent: Math.max(3, overall),
+            stage: `Installing ${i + 1} of ${total}: ${pack.title}...`,
+          });
+        },
+      });
 
-    totalEntries += res.entryCount;
-    installedIds.push(pack.id);
+      if (res.skipped) {
+        skippedPacks.push(res.skipped);
+      } else {
+        totalEntries += res.entryCount;
+        installedIds.push(pack.id);
+      }
+      if (res.warning) {
+        warnings.push(res.warning);
+      }
+    } catch (err: any) {
+      if (isAbortError(err)) throw err;
+      const errMsg =
+        err instanceof PackLoadError
+          ? err.message
+          : formatPackError({
+              packTitle: pack.title,
+              filePath: resolvePackFilePath(pack),
+              reason: err?.message || String(err),
+            });
+      failedPacks.push({
+        pack,
+        languageId,
+        error: errMsg,
+        httpStatus: err instanceof PackLoadError ? err.httpStatus : undefined,
+        detectedFormat: err instanceof PackLoadError ? err.detectedFormat : undefined,
+        required: isBundledPackRequired(pack),
+      });
+    }
   }
 
-  // Ensure installedPacks record exists even if core-dict was removed by developer and only sub-packs were installed
-  const existingInstalled = await db.installedPacks.get(languageId);
-  if (!existingInstalled) {
+  // Evaluate required pack success: a language counts as installed only if its required packs succeeded
+  const installedBundlesMap = await getInstalledBundledPacksMap();
+  const requiredPacks = includedPacks.filter(isBundledPackRequired);
+  const allRequiredSucceeded =
+    requiredPacks.length === 0
+      ? installedIds.length > 0 || skippedPacks.length > 0
+      : requiredPacks.every(
+          (rp) =>
+            installedIds.includes(rp.id) ||
+            Boolean(installedBundlesMap[rp.id]) ||
+            skippedPacks.some((s) => s.pack.id === rp.id)
+        );
+
+  const anySucceededOrSkipped = installedIds.length > 0 || skippedPacks.length > 0;
+  let languageStatus: LanguageInstallStatus = 'not-installed';
+  if (allRequiredSucceeded && anySucceededOrSkipped) {
+    languageStatus = 'installed';
+  } else if (anySucceededOrSkipped || (await db.imports.where('languageCode').equals(languageId).count()) > 0) {
+    languageStatus = 'partial';
+  }
+
+  if (languageStatus !== 'not-installed') {
+    const existingInstalled = await db.installedPacks.get(languageId);
     const dbCount = await db.jmdictEntries
       .where('languageCode')
       .equals(languageId)
@@ -1574,33 +2341,38 @@ export async function installAllIncludedPacksForLanguage(
       .count();
     await db.installedPacks.put({
       languageId,
-      version: '1.0.0',
-      installedAt: Date.now(),
+      version: existingInstalled?.version || '1.0.0',
+      installedAt: existingInstalled?.installedAt || Date.now(),
       updatedAt: Date.now(),
-      source: 'bundled',
+      source: existingInstalled?.source || 'bundled',
+      status: languageStatus === 'installed' ? 'installed' : 'partial',
       entryCount: dbCount || totalEntries,
-      sizeBytes: 0,
-      subpacks: installedIds,
+      sizeBytes: existingInstalled?.sizeBytes || 0,
+      subpacks: Array.from(new Set([...(existingInstalled?.subpacks || []), ...installedIds])),
+      manifestUrl: existingInstalled?.manifestUrl,
     });
     await ensureDefaultDeck(languageId);
-  } else {
-    await db.installedPacks.put({
-      ...existingInstalled,
-      updatedAt: Date.now(),
-      subpacks: Array.from(new Set([...(existingInstalled.subpacks || []), ...installedIds])),
-    });
   }
 
   await logEvent('language_bundle_installed', {
     languageId,
     packCount: installedIds.length,
+    failedCount: failedPacks.length,
+    skippedCount: skippedPacks.length,
+    languageStatus,
     totalEntries,
   });
 
   return {
+    languageId,
     installedCount: installedIds.length,
+    totalPacks: total,
     totalEntries,
     packIds: installedIds,
+    failedPacks,
+    skippedPacks,
+    warnings,
+    languageStatus,
   };
 }
 
@@ -1608,14 +2380,11 @@ export async function installAllAvailableLanguagePacks(options?: {
   languageIds?: string[];
   signal?: AbortSignal;
   mode?: 'auto' | 'cloud-strict' | 'starter';
+  overwriteManualImports?: boolean;
   globOverride?: Record<string, string>;
   skipRemoteManifest?: boolean;
   onProgress?: (progress: AllLanguagesBundleInstallProgress) => void;
-}): Promise<{
-  languagesInstalled: string[];
-  totalPacksInstalled: number;
-  totalEntries: number;
-}> {
+}): Promise<AllLanguagesBundleInstallResult> {
   const signal = options?.signal;
   throwIfAborted(signal);
 
@@ -1631,8 +2400,13 @@ export async function installAllAvailableLanguagePacks(options?: {
         .filter((id) => packs.some((bp) => bp.languageId === id));
 
   let totalPacksInstalled = 0;
+  let totalPacksAttempted = 0;
   let totalEntries = 0;
   const languagesInstalled: string[] = [];
+  const partialLanguages: string[] = [];
+  const failedPacks: BundledPackFailure[] = [];
+  const skippedPacks: BundledPackSkipped[] = [];
+  const warnings: string[] = [];
 
   for (let i = 0; i < targetLangs.length; i++) {
     throwIfAborted(signal);
@@ -1642,6 +2416,7 @@ export async function installAllAvailableLanguagePacks(options?: {
     const res = await installAllIncludedPacksForLanguage(langId, {
       signal,
       mode: options?.mode ?? 'auto',
+      overwriteManualImports: options?.overwriteManualImports,
       globOverride: options?.globOverride,
       skipRemoteManifest: options?.skipRemoteManifest,
       onProgress: (lp) => {
@@ -1660,16 +2435,278 @@ export async function installAllAvailableLanguagePacks(options?: {
       },
     });
 
-    languagesInstalled.push(langId);
+    if (res.languageStatus === 'installed') {
+      languagesInstalled.push(langId);
+    } else if (res.languageStatus === 'partial') {
+      partialLanguages.push(langId);
+    }
+
     totalPacksInstalled += res.installedCount;
+    totalPacksAttempted += res.totalPacks;
     totalEntries += res.totalEntries;
+    failedPacks.push(...res.failedPacks);
+    skippedPacks.push(...res.skippedPacks);
+    warnings.push(...res.warnings);
   }
+
+  const effectiveSuccessCount = totalPacksInstalled + skippedPacks.length;
+  const summaryText =
+    failedPacks.length > 0
+      ? `${effectiveSuccessCount} of ${totalPacksAttempted} installed. ${failedPacks.length} failed: ${failedPacks
+          .map((f) => f.pack.title)
+          .join(', ')}`
+      : `Installed ${totalPacksInstalled} of ${totalPacksAttempted} packs across ${languagesInstalled.length} languages (${totalEntries.toLocaleString()} entries).`;
 
   return {
     languagesInstalled,
+    partialLanguages,
     totalPacksInstalled,
+    totalPacksAttempted,
     totalEntries,
+    failedPacks,
+    skippedPacks,
+    warnings,
+    summaryText,
   };
+}
+
+export async function retryFailedBundledPacks(
+  failures: BundledPackFailure[],
+  options?: {
+    signal?: AbortSignal;
+    mode?: 'auto' | 'cloud-strict' | 'starter';
+    overwriteManualImports?: boolean;
+    onProgress?: (progress: { completed: number; total: number; currentTitle: string }) => void;
+  }
+): Promise<AllLanguagesBundleInstallResult> {
+  const signal = options?.signal;
+  throwIfAborted(signal);
+
+  let totalPacksInstalled = 0;
+  let totalEntries = 0;
+  const failedPacks: BundledPackFailure[] = [];
+  const skippedPacks: BundledPackSkipped[] = [];
+  const warnings: string[] = [];
+  const touchedLangs = new Set<string>();
+
+  for (let i = 0; i < failures.length; i++) {
+    throwIfAborted(signal);
+    const { pack } = failures[i];
+    touchedLangs.add(pack.languageId);
+    options?.onProgress?.({
+      completed: i,
+      total: failures.length,
+      currentTitle: pack.title,
+    });
+
+    try {
+      const res = await installSingleBundledPack(pack, {
+        signal,
+        mode: options?.mode ?? 'auto',
+        overwriteManualImports: options?.overwriteManualImports,
+      });
+      if (res.skipped) skippedPacks.push(res.skipped);
+      else totalPacksInstalled++;
+      totalEntries += res.entryCount;
+      if (res.warning) warnings.push(res.warning);
+    } catch (err: any) {
+      if (isAbortError(err)) throw err;
+      const errMsg =
+        err instanceof PackLoadError
+          ? err.message
+          : formatPackError({
+              packTitle: pack.title,
+              filePath: resolvePackFilePath(pack),
+              reason: err?.message || String(err),
+            });
+      failedPacks.push({
+        pack,
+        languageId: pack.languageId,
+        error: errMsg,
+        httpStatus: err instanceof PackLoadError ? err.httpStatus : undefined,
+        detectedFormat: err instanceof PackLoadError ? err.detectedFormat : undefined,
+        required: isBundledPackRequired(pack),
+      });
+    }
+  }
+
+  // Refresh installedPacks status for each touched language
+  const installedBundlesMap = await getInstalledBundledPacksMap();
+  const { packs: allActivePacks } = await getEffectiveBundledPacks({ skipRemoteManifest: true });
+  const languagesInstalled: string[] = [];
+  const partialLanguages: string[] = [];
+
+  for (const langId of touchedLangs) {
+    const langPacks = allActivePacks.filter((p) => p.languageId === langId);
+    const requiredPacks = langPacks.filter(isBundledPackRequired);
+    const allReqOk =
+      requiredPacks.length === 0
+        ? langPacks.some((p) => Boolean(installedBundlesMap[p.id]))
+        : requiredPacks.every((rp) => Boolean(installedBundlesMap[rp.id]));
+    const anyOk = langPacks.some((p) => Boolean(installedBundlesMap[p.id]));
+
+    if (anyOk) {
+      const existing = await db.installedPacks.get(langId);
+      const dbCount = await db.jmdictEntries
+        .where('languageCode')
+        .equals(langId)
+        .filter((r) => !r.kinds?.includes('sentences'))
+        .count();
+      const nextStatus: 'installed' | 'partial' = allReqOk ? 'installed' : 'partial';
+      await db.installedPacks.put({
+        languageId: langId,
+        version: existing?.version || '1.0.0',
+        installedAt: existing?.installedAt || Date.now(),
+        updatedAt: Date.now(),
+        source: existing?.source || 'bundled',
+        status: nextStatus,
+        entryCount: dbCount,
+        sizeBytes: existing?.sizeBytes || 0,
+        subpacks: existing?.subpacks || [],
+        manifestUrl: existing?.manifestUrl,
+      });
+      await ensureDefaultDeck(langId);
+      if (nextStatus === 'installed') languagesInstalled.push(langId);
+      else partialLanguages.push(langId);
+    }
+  }
+
+  const totalAttempted = failures.length;
+  const effectiveOk = totalPacksInstalled + skippedPacks.length;
+  const summaryText =
+    failedPacks.length > 0
+      ? `${effectiveOk} of ${totalAttempted} retried installed. ${failedPacks.length} failed: ${failedPacks
+          .map((f) => f.pack.title)
+          .join(', ')}`
+      : `Retry succeeded: ${effectiveOk} of ${totalAttempted} packs installed (${totalEntries.toLocaleString()} entries).`;
+
+  return {
+    languagesInstalled,
+    partialLanguages,
+    totalPacksInstalled,
+    totalPacksAttempted: totalAttempted,
+    totalEntries,
+    failedPacks,
+    skippedPacks,
+    warnings,
+    summaryText,
+  };
+}
+
+export async function runBundledPacksCheck(
+  packs: BundledPackDefinition[],
+  options?: {
+    maxRows?: number;
+    signal?: AbortSignal;
+    onProgress?: (checked: number, total: number) => void;
+  }
+): Promise<PackCheckRow[]> {
+  const maxRows = options?.maxRows ?? 100;
+  const signal = options?.signal;
+  const results: PackCheckRow[] = [];
+
+  let cloudManifest: Awaited<ReturnType<typeof fetchCloudPackManifest>> = null;
+  let manifestUrl = DEFAULT_PACK_MANIFEST_URL;
+  if (packs.some((p) => p.sourceType === 'cloud-v2')) {
+    manifestUrl = await getPackManifestUrl();
+    cloudManifest = await fetchCloudPackManifest(manifestUrl, signal).catch(() => null);
+  }
+
+  for (let i = 0; i < packs.length; i++) {
+    throwIfAborted(signal);
+    const pack = packs[i];
+    options?.onProgress?.(i, packs.length);
+
+    let overrideUrl: string | undefined;
+    if (pack.sourceType === 'cloud-v2') {
+      const mItem = cloudManifest?.packs?.[pack.languageId];
+      overrideUrl = resolveManifestPackUrl(mItem, manifestUrl) || pack.url;
+    }
+
+    const filePath = overrideUrl || resolvePackFilePath(pack);
+
+    try {
+      const { detected, fileName, filePath: resolvedPath, httpStatus } = await fetchAndDetectPackContent(
+        pack,
+        signal,
+        overrideUrl
+      );
+
+      const parsed = parsePackContentForCategory({
+        pack,
+        detected,
+        fileName,
+        filePath: resolvedPath,
+        httpStatus,
+        maxRows,
+      });
+
+      const rowsFound = getPayloadRowCount(parsed);
+      if (rowsFound === 0) {
+        results.push({
+          packId: pack.id,
+          packTitle: pack.title,
+          languageId: pack.languageId,
+          category: pack.category,
+          filePath: resolvedPath,
+          status: 'error',
+          detectedFormat: detected.detectedLabel,
+          rowsFound: 0,
+          httpStatus,
+          problem: formatPackError({
+            packTitle: pack.title,
+            filePath: resolvedPath,
+            httpStatus,
+            detectedFormat: detected.detectedLabel,
+            reason: `No valid ${BUNDLED_PACK_CATEGORY_LABELS[pack.category].toLowerCase()} rows found.`,
+          }),
+        });
+      } else if (detected.mismatchWarning) {
+        results.push({
+          packId: pack.id,
+          packTitle: pack.title,
+          languageId: pack.languageId,
+          category: pack.category,
+          filePath: resolvedPath,
+          status: 'warning',
+          detectedFormat: detected.detectedLabel,
+          rowsFound,
+          httpStatus,
+          problem: detected.mismatchWarning,
+        });
+      } else {
+        results.push({
+          packId: pack.id,
+          packTitle: pack.title,
+          languageId: pack.languageId,
+          category: pack.category,
+          filePath: resolvedPath,
+          status: 'ok',
+          detectedFormat: detected.detectedLabel,
+          rowsFound,
+          httpStatus,
+          problem: '',
+        });
+      }
+    } catch (err: any) {
+      if (isAbortError(err)) throw err;
+      results.push({
+        packId: pack.id,
+        packTitle: pack.title,
+        languageId: pack.languageId,
+        category: pack.category,
+        filePath,
+        status: 'error',
+        detectedFormat: err instanceof PackLoadError && err.detectedFormat ? err.detectedFormat : 'Unknown',
+        rowsFound: 0,
+        httpStatus: err instanceof PackLoadError ? err.httpStatus : undefined,
+        problem: err?.message || String(err),
+      });
+    }
+  }
+
+  options?.onProgress?.(packs.length, packs.length);
+  return results;
 }
 
 export async function previewCsvOrTsvForDeveloper(

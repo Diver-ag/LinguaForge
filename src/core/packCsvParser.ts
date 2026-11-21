@@ -28,8 +28,10 @@ export const BUNDLED_PACK_CATEGORY_LABELS: Record<BundledPackCategory, string> =
   frequency: 'Frequency',
 };
 
+export type TabularDelimiter = ',' | '\t' | ';';
+
 export interface ParsedDelimitedTable {
-  delimiter: ',' | '\t';
+  delimiter: TabularDelimiter;
   headers: string[];
   hasHeaderRow: boolean;
   rows: string[][];
@@ -114,6 +116,7 @@ export interface ParsedKanjiCsvRow {
 export interface ParsedFrequencyCsvRow {
   word: string;
   rank: number;
+  form?: string;
 }
 
 export function stripUtf8Bom(text: string): string {
@@ -152,7 +155,7 @@ function splitSampleLines(text: string, maxLines = 15): string[] {
   return lines;
 }
 
-function countFieldsInLine(line: string, delimiter: ',' | '\t'): number {
+function countFieldsInLine(line: string, delimiter: TabularDelimiter): number {
   let count = 1;
   let inQuotes = false;
   for (let i = 0; i < line.length; i++) {
@@ -170,33 +173,67 @@ function countFieldsInLine(line: string, delimiter: ',' | '\t'): number {
   return count;
 }
 
-export function detectTabularDelimiter(text: string, fileName = ''): ',' | '\t' {
-  const lower = fileName.toLowerCase();
-  if (lower.endsWith('.tsv')) return '\t';
-  if (lower.endsWith('.csv')) return ',';
-
+/**
+ * Detects delimiter purely from file content (comma, tab, semicolon),
+ * preferring delimiters that split the header/sample lines into consistent >=2 columns.
+ */
+export function detectTabularDelimiter(text: string, _fileName = ''): TabularDelimiter {
   const sampleLines = splitSampleLines(stripUtf8Bom(text), 12);
   if (sampleLines.length === 0) return ',';
 
-  let tabScore = 0;
-  let commaScore = 0;
-  for (const line of sampleLines) {
-    const tCount = countFieldsInLine(line, '\t');
-    const cCount = countFieldsInLine(line, ',');
-    if (tCount > 1 && tCount >= cCount) tabScore++;
-    else if (cCount > 1) commaScore++;
+  const candidates: TabularDelimiter[] = ['\t', ',', ';'];
+  let bestDelim: TabularDelimiter = ',';
+  let bestScore = -1;
+
+  const firstCounts = {
+    '\t': countFieldsInLine(sampleLines[0], '\t'),
+    ',': countFieldsInLine(sampleLines[0], ','),
+    ';': countFieldsInLine(sampleLines[0], ';'),
+  };
+
+  for (const delim of candidates) {
+    const headerFields = firstCounts[delim];
+    if (headerFields <= 1 && sampleLines.every((l) => countFieldsInLine(l, delim) <= 1)) {
+      continue;
+    }
+
+    let consistentLines = 0;
+    let multiFieldLines = 0;
+    let totalFields = 0;
+
+    for (const line of sampleLines) {
+      const cnt = countFieldsInLine(line, delim);
+      if (cnt > 1) multiFieldLines++;
+      if (cnt > 1 && cnt === headerFields) consistentLines++;
+      totalFields += cnt;
+    }
+
+    // Strongly reward matching the first line's column count across rows (prevents ';' inside quoted/unquoted glosses beating ',')
+    const score =
+      consistentLines * 100 +
+      multiFieldLines * 10 +
+      (headerFields > 1 ? headerFields * 3 : 0) +
+      totalFields * 0.1 +
+      (delim === '\t' ? 0.05 : 0);
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestDelim = delim;
+    }
   }
-  return tabScore > commaScore ? '\t' : ',';
+
+  return bestDelim;
 }
 
 /**
- * RFC-4180 compliant quote-aware CSV/TSV parser.
- * Handles commas/tabs inside quotes, escaped quotes (""), UTF-8 BOM, CRLF/LF/CR, and multiline quoted cells.
+ * RFC-4180 compliant quote-aware CSV/TSV/SSV parser.
+ * Handles delimiters inside quotes, escaped quotes (""), UTF-8 BOM, CRLF/LF/CR, and multiline quoted cells.
  */
 export function parseRfcDelimitedText(
   rawText: string,
-  delimiter?: ',' | '\t',
-  fileName = ''
+  delimiter?: TabularDelimiter,
+  fileName = '',
+  maxRows?: number
 ): string[][] {
   const cleanText = stripUtf8Bom(rawText);
   if (!cleanText.trim()) return [];
@@ -247,6 +284,9 @@ export function parseRfcDelimitedText(
       startedQuoted = false;
       if (row.some((c) => c !== '')) {
         rows.push(row);
+        if (maxRows !== undefined && rows.length >= maxRows) {
+          return rows;
+        }
       }
       row = [];
       continue;
@@ -351,11 +391,17 @@ function isLikelyPackHeaderRow(firstRow: string[], category?: BundledPackCategor
 export function parseDelimitedPackTable(
   rawText: string,
   fileName = '',
-  category?: BundledPackCategory
+  category?: BundledPackCategory,
+  maxDataRows?: number
 ): ParsedDelimitedTable {
   const cleanText = stripUtf8Bom(rawText);
   const delimiter = detectTabularDelimiter(cleanText, fileName);
-  const parsed = parseRfcDelimitedText(cleanText, delimiter, fileName);
+  const parsed = parseRfcDelimitedText(
+    cleanText,
+    delimiter,
+    fileName,
+    maxDataRows !== undefined ? maxDataRows + 1 : undefined
+  );
 
   if (parsed.length === 0) {
     return {
@@ -598,8 +644,16 @@ export function detectCategoryColumnMapping(
   );
   if (rankIdx !== -1) used.add(rankIdx);
 
+  const formIdx = findHeaderIndex(
+    normHeaders,
+    ['form', 'reading', 'kana', 'surface'],
+    used
+  );
+  if (formIdx !== -1) used.add(formIdx);
+
   mapping.word = wordIdx;
   mapping.rank = rankIdx;
+  if (formIdx !== -1) mapping.form = formIdx;
 
   const autoDetected =
     table.hasHeaderRow &&
@@ -791,6 +845,7 @@ export function extractFrequencyRowsFromTable(
 ): ParsedFrequencyCsvRow[] {
   const detected = mapping || detectCategoryColumnMapping('frequency', table).mapping;
   const wordCol = detected.word !== undefined && detected.word >= 0 ? detected.word : 0;
+  const formCol = detected.form !== undefined && detected.form >= 0 ? detected.form : -1;
   const rankCol =
     detected.rank !== undefined && detected.rank >= 0
       ? detected.rank
@@ -804,6 +859,8 @@ export function extractFrequencyRowsFromTable(
     const word = (row[wordCol] || '').trim();
     if (!word) continue;
 
+    const form = formCol >= 0 ? (row[formCol] || '').trim() || undefined : undefined;
+
     let rank = i + 1;
     if (rankCol >= 0) {
       const parsed = parseInt((row[rankCol] || '').replace(/[^0-9]/g, ''), 10);
@@ -814,7 +871,11 @@ export function extractFrequencyRowsFromTable(
       }
     }
 
-    out.push({ word, rank });
+    const item: ParsedFrequencyCsvRow = { word, rank };
+    if (form && form !== word) {
+      item.form = form;
+    }
+    out.push(item);
   }
   return out;
 }

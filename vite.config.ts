@@ -35,6 +35,65 @@ export default defineConfig(() => {
           });
         },
       },
+      {
+        name: 'packs-strict-404',
+        configureServer(server) {
+          const publicPacksRoot = path.resolve('public/packs');
+          server.middlewares.use((req, res, next) => {
+            const rawUrl = req.url || '';
+            const pathname = rawUrl.split('?')[0];
+            if (!pathname.startsWith('/packs/')) return next();
+
+            let rel = '';
+            try {
+              rel = decodeURIComponent(pathname.slice('/packs/'.length));
+            } catch {
+              res.statusCode = 404;
+              res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+              res.end(`File not found on server: ${pathname}`);
+              return;
+            }
+            const resolved = path.resolve(publicPacksRoot, rel);
+            const insideRoot =
+              resolved === publicPacksRoot || resolved.startsWith(publicPacksRoot + path.sep);
+            if (!insideRoot || !fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+              res.statusCode = 404;
+              res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+              res.end(`File not found on server: ${pathname}`);
+              return;
+            }
+            next();
+          });
+        },
+        configurePreviewServer(server) {
+          const distPacksRoot = path.resolve('dist/packs');
+          server.middlewares.use((req, res, next) => {
+            const rawUrl = req.url || '';
+            const pathname = rawUrl.split('?')[0];
+            if (!pathname.startsWith('/packs/')) return next();
+
+            let rel = '';
+            try {
+              rel = decodeURIComponent(pathname.slice('/packs/'.length));
+            } catch {
+              res.statusCode = 404;
+              res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+              res.end(`File not found on server: ${pathname}`);
+              return;
+            }
+            const resolved = path.resolve(distPacksRoot, rel);
+            const insideRoot =
+              resolved === distPacksRoot || resolved.startsWith(distPacksRoot + path.sep);
+            if (!insideRoot || !fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+              res.statusCode = 404;
+              res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+              res.end(`File not found on server: ${pathname}`);
+              return;
+            }
+            next();
+          });
+        },
+      },
       react(),
       tailwindcss(),
       VitePWA({
@@ -73,11 +132,17 @@ export default defineConfig(() => {
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2,gz,dat,wasm}'],
+          globIgnores: ['packs/**', '**/packs/**', '**/*.map'],
+          navigateFallbackDenylist: [/^\/packs\//],
           maximumFileSizeToCacheInBytes: 20 * 1024 * 1024,
           cleanupOutdatedCaches: true,
           clientsClaim: true,
           skipWaiting: false,
           runtimeCaching: [
+            {
+              urlPattern: ({ url }) => url.pathname.startsWith('/packs/'),
+              handler: 'NetworkOnly',
+            },
             {
               urlPattern: ({ request }) => request.mode === 'navigate',
               handler: 'NetworkFirst',

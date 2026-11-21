@@ -1,5 +1,4 @@
 import Dexie from 'dexie';
-import JSZip from 'jszip';
 import { deriveFrequencyInfo, deriveBandFromRank } from './jmdictFrequency';
 import { computeFingerprint } from '../fingerprint';
 import {
@@ -8,6 +7,15 @@ import {
   isEasierLevel,
   SINGLE_KANJI_REGEX,
 } from './kanjiListParser';
+import {
+  detectAndDecodePackContent,
+  PackLoadError,
+  type DetectedContentFormat,
+} from '../../core/packFormatDetector';
+import {
+  detectTabularDelimiter,
+  parseRfcDelimitedText,
+} from '../../core/packCsvParser';
 import type { JmdictEntryItem, DictionaryMetaItem, ImportRecord, ImportKind, KanjiEntryItem } from '../../db/db';
 
 // Worker DB connection matching LinguaForgeDatabase v6
@@ -72,34 +80,12 @@ class WorkerLinguaForgeDB extends Dexie {
 let isCancelled = false;
 let hasNonEnglishFound = false;
 
-// CSV Parser for vocabulary JLPT/frequency overlays (kanji-levels uses parseKanjiListTable)
+// CSV/TSV/semicolon parser for vocabulary JLPT/frequency overlays (kanji-levels uses parseKanjiListTable)
 function parseCsvRows(text: string): { headers: string[]; rows: string[][] } {
-  const cleanText = text.replace(/^\uFEFF/, '');
-  const rawLines = cleanText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  if (rawLines.length === 0) return { headers: [], rows: [] };
-
-  const parsedLines: string[][] = [];
-  for (const line of rawLines) {
-    if (line.startsWith('#') || line.startsWith('//')) continue;
-    const row: string[] = [];
-    let cur = '';
-    let inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (ch === '"') {
-        inQuotes = !inQuotes;
-      } else if ((ch === ',' || ch === '\t') && !inQuotes) {
-        row.push(cur.trim().replace(/^["']|["']$/g, '').normalize('NFC'));
-        cur = '';
-      } else {
-        cur += ch;
-      }
-    }
-    row.push(cur.trim().replace(/^["']|["']$/g, '').normalize('NFC'));
-    if (row.some(Boolean)) {
-      parsedLines.push(row);
-    }
-  }
+  const delimiter = detectTabularDelimiter(text);
+  const parsedLines = parseRfcDelimitedText(text, delimiter)
+    .map((row) => row.map((cell) => cell.trim().normalize('NFC')))
+    .filter((row) => row.some(Boolean));
 
   if (parsedLines.length === 0) return { headers: [], rows: [] };
 
@@ -107,6 +93,7 @@ function parseCsvRows(text: string): { headers: string[]; rows: string[][] } {
   const headerKeywords = [
     'expression',
     'word',
+    'form',
     'kanji',
     'character',
     'char',
@@ -134,50 +121,35 @@ function parseCsvRows(text: string): { headers: string[]; rows: string[][] } {
   return { headers: [], rows: parsedLines };
 }
 
-// Convert raw buffer or string to JSON text, handling .zip and .gz
+// Convert raw buffer or string using content-based magic bytes & format detection
 async function extractJsonText(
   data: ArrayBuffer | string,
-  fileName = ''
-): Promise<{ text: string; sizeBytes: number }> {
-  let sizeBytes = typeof data === 'string' ? data.length : data.byteLength;
+  fileName = '',
+  httpStatus?: number
+): Promise<{
+  text: string;
+  sizeBytes: number;
+  format: DetectedContentFormat;
+  detectedLabel: string;
+}> {
+  const rawBytes =
+    typeof data === 'string' ? new TextEncoder().encode(data) : new Uint8Array(data);
+  const sizeBytes = rawBytes.byteLength;
 
-  if (typeof data === 'string') {
-    return { text: data, sizeBytes };
-  }
+  self.postMessage({ type: 'status', message: 'Detecting file format & decompressing...' });
 
-  const uint8 = new Uint8Array(data);
+  const detected = await detectAndDecodePackContent(rawBytes, {
+    packTitle: fileName || 'Manual Import',
+    filePath: fileName || 'manual-import',
+    httpStatus,
+  });
 
-  // Check if ZIP archive (PK\x03\x04 or .zip extension)
-  if (
-    (uint8[0] === 0x50 && uint8[1] === 0x4b && uint8[2] === 0x03 && uint8[3] === 0x04) ||
-    fileName.endsWith('.zip')
-  ) {
-    self.postMessage({ type: 'status', message: 'Decompressing ZIP archive...' });
-    const zip = await JSZip.loadAsync(data);
-    const jsonFile = Object.values(zip.files).find(
-      (f) => !f.dir && f.name.toLowerCase().endsWith('.json')
-    );
-    if (!jsonFile) {
-      throw new Error('No .json dictionary file found inside the ZIP archive');
-    }
-    const text = await jsonFile.async('text');
-    return { text, sizeBytes };
-  }
-
-  // Check if GZIP archive (0x1F 0x8B or .gz extension)
-  if ((uint8[0] === 0x1f && uint8[1] === 0x8b) || fileName.endsWith('.gz')) {
-    self.postMessage({ type: 'status', message: 'Decompressing GZIP stream...' });
-    if (typeof DecompressionStream !== 'undefined') {
-      const stream = new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('gzip')));
-      const text = await stream.text();
-      return { text, sizeBytes };
-    }
-  }
-
-  // Standard text/json
-  const decoder = new TextDecoder('utf-8');
-  const text = decoder.decode(uint8);
-  return { text, sizeBytes };
+  return {
+    text: detected.text,
+    sizeBytes: detected.sizeBytes || sizeBytes,
+    format: detected.format,
+    detectedLabel: detected.detectedLabel,
+  };
 }
 
 // Transform raw JMdict or names word into indexed entry
@@ -291,14 +263,21 @@ self.addEventListener('message', async (e: MessageEvent) => {
     try {
       let rawData: ArrayBuffer | string;
       let effectiveFileName = fileName || '';
+      let fetchedHttpStatus: number | undefined;
 
       if (source === 'url') {
         if (!url) throw new Error('No URL specified for download');
         self.postMessage({ type: 'status', message: `Connecting to ${url}...` });
 
         const response = await fetch(url);
+        fetchedHttpStatus = response.status;
         if (!response.ok) {
-          throw new Error(`HTTP ${response.status} ${response.statusText} while fetching dictionary`);
+          throw new PackLoadError({
+            packTitle: effectiveFileName || url,
+            filePath: url,
+            httpStatus: response.status,
+            reason: `HTTP ${response.status} ${response.statusText || 'Error'}`,
+          });
         }
         effectiveFileName = fileName || url.split('?')[0].split('/').pop() || 'dictionary.json';
         rawData = await response.arrayBuffer();
@@ -315,31 +294,63 @@ self.addEventListener('message', async (e: MessageEvent) => {
       const fingerprint = await computeFingerprint(rawBytes);
 
       self.postMessage({ type: 'status', message: 'Decompressing & reading data...' });
-      const { text, sizeBytes } =
+      const { text, sizeBytes, format, detectedLabel } =
         source === 'files' && Array.isArray(files)
           ? {
               text: '',
               sizeBytes: files.reduce((acc: number, f: any) => acc + (f.size || (f.text || '').length), 0),
+              format: 'csv' as const,
+              detectedLabel: 'CSV',
             }
-          : await extractJsonText(rawData, effectiveFileName);
+          : await extractJsonText(rawData, url || effectiveFileName, fetchedHttpStatus);
 
-      // Parse JSON or detect CSV/TSV
+      // Parse JSON, JSONL, or CSV/TSV based strictly on detected content format
       let parsed: any = null;
-      const lowerEffective = effectiveFileName.toLowerCase();
-      let isCsv = lowerEffective.endsWith('.csv') || lowerEffective.endsWith('.tsv');
-      const trimmed = text.trim();
-      if (!isCsv && (trimmed.startsWith('{') || trimmed.startsWith('['))) {
-        try {
-          parsed = JSON.parse(text);
-        } catch {
+      let isCsv = format === 'csv' || format === 'tsv';
+
+      if (source !== 'files') {
+        if (format === 'json') {
+          try {
+            parsed = JSON.parse(text);
+          } catch (jsonErr: any) {
+            throw new PackLoadError({
+              packTitle: effectiveFileName,
+              filePath: url || effectiveFileName,
+              httpStatus: fetchedHttpStatus,
+              detectedFormat: detectedLabel,
+              reason: jsonErr?.message || 'Invalid JSON syntax',
+            });
+          }
+        } else if (format === 'jsonl') {
+          const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+          parsed = lines.map((line, idx) => {
+            try {
+              return JSON.parse(line);
+            } catch (lineErr: any) {
+              throw new PackLoadError({
+                packTitle: effectiveFileName,
+                filePath: url || effectiveFileName,
+                httpStatus: fetchedHttpStatus,
+                detectedFormat: detectedLabel,
+                reason: `Invalid JSONL on line ${idx + 1}: ${lineErr?.message || 'parse error'}`,
+              });
+            }
+          });
+        } else if (format === 'csv' || format === 'tsv') {
           isCsv = true;
+        } else {
+          throw new PackLoadError({
+            packTitle: effectiveFileName,
+            filePath: url || effectiveFileName,
+            httpStatus: fetchedHttpStatus,
+            detectedFormat: detectedLabel,
+            reason: `Unsupported or empty content format (${detectedLabel})`,
+          });
         }
-      } else {
-        isCsv = true;
       }
 
       // Determine kind
-      let kind: ImportKind = explicitKind || parsed?.kind;
+      let kind: ImportKind = explicitKind || (parsed && !Array.isArray(parsed) ? parsed.kind : undefined);
       if (!kind) {
         const lowerName = effectiveFileName.toLowerCase();
         if (lowerName.includes('name') || lowerName.includes('jmnedict')) {
@@ -478,6 +489,79 @@ self.addEventListener('message', async (e: MessageEvent) => {
 
         for (const fileObj of filesToProcess) {
           const fName = fileObj.fileName;
+          const objTrimmed = fileObj.text.trim();
+          const objLooksJson =
+            filesToProcess.length === 1 && !isCsv && parsed !== null;
+
+          if (objLooksJson) {
+            const arr = Array.isArray(parsed)
+              ? parsed
+              : Array.isArray(parsed?.entries)
+              ? parsed.entries
+              : Array.isArray(parsed?.kanji)
+              ? parsed.kanji
+              : Array.isArray(parsed?.items)
+              ? parsed.items
+              : Array.isArray(parsed?.words)
+              ? parsed.words
+              : Array.isArray(parsed?.data)
+              ? parsed.data
+              : [];
+            const fallbackLvl = resolveRowJlptLevel('', fName.toLowerCase().includes('n5') ? 'N5' : fName.toLowerCase().includes('n4') ? 'N4' : fName.toLowerCase().includes('n3') ? 'N3' : fName.toLowerCase().includes('n2') ? 'N2' : fName.toLowerCase().includes('n1') ? 'N1' : 'No level');
+
+            for (const item of arr) {
+              if (!item || typeof item !== 'object') {
+                skippedCount++;
+                continue;
+              }
+              const rawChar = String(item.character || item.kanji || item.char || item.literal || item.word || '').normalize('NFC').trim();
+              if (!rawChar || !SINGLE_KANJI_REGEX.test(rawChar)) {
+                skippedCount++;
+                continue;
+              }
+              const lvl = resolveRowJlptLevel(item.jlptLevel ?? item.jlpt ?? item.level, fallbackLvl);
+              const onReadings: string[] = Array.isArray(item.onReadings) ? item.onReadings : Array.isArray(item.onyomi) ? item.onyomi : [];
+              const kunReadings: string[] = Array.isArray(item.kunReadings) ? item.kunReadings : Array.isArray(item.kunyomi) ? item.kunyomi : [];
+              let meanings: string[] = Array.isArray(item.meanings) ? item.meanings : [];
+              if (meanings.length === 0 && typeof (item.meaning ?? item.description) === 'string') {
+                meanings = String(item.meaning ?? item.description).split(/[,;/|]+/).map((s) => s.trim()).filter(Boolean);
+              }
+              const parsedStroke = Number(item.strokes ?? item.strokeCount);
+              const strokeCount = Number.isFinite(parsedStroke) && parsedStroke > 0 ? Math.round(parsedStroke) : undefined;
+
+              const existing = kanjiMap.get(rawChar) || existingDbMap.get(rawChar);
+              if (existing) {
+                duplicateCount++;
+                if (isEasierLevel(lvl, existing.jlptLevel)) existing.jlptLevel = lvl;
+                if (onReadings.length > 0) {
+                  existing.readings = { ...existing.readings, on: Array.from(new Set([...(existing.readings?.on || []), ...onReadings])) };
+                }
+                if (kunReadings.length > 0) {
+                  existing.readings = { ...existing.readings, kun: Array.from(new Set([...(existing.readings?.kun || []), ...kunReadings])) };
+                }
+                if (meanings.length > 0) {
+                  existing.meanings = Array.from(new Set([...(existing.meanings || []), ...meanings]));
+                }
+                if (strokeCount && !existing.strokeCount) existing.strokeCount = strokeCount;
+                existing.importIds = Array.from(new Set([...(existing.importIds || []), importId]));
+                existing.updatedAt = Date.now();
+                kanjiMap.set(rawChar, existing);
+              } else {
+                kanjiMap.set(rawChar, {
+                  character: rawChar,
+                  jlptLevel: lvl,
+                  readings: onReadings.length > 0 || kunReadings.length > 0 ? { on: onReadings, kun: kunReadings } : undefined,
+                  meanings: meanings.length > 0 ? meanings : undefined,
+                  strokeCount,
+                  importIds: [importId],
+                  updatedAt: Date.now(),
+                });
+              }
+            }
+            continue;
+          }
+
+          void objTrimmed;
           const parsedTable = parseKanjiListTable(fileObj.text, fName);
           const inferredLevel = parsedTable.inferredLevel;
           const rows = parsedTable.rows;

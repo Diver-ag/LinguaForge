@@ -19,12 +19,17 @@ import {
 } from '../../core/packManager';
 import {
   BUNDLED_PACK_CATEGORY_LABELS,
+  findManualDuplicateForPack,
   getEffectiveBundledPacks,
   getInstalledBundledPacksMap,
   installAllAvailableLanguagePacks,
   installAllIncludedPacksForLanguage,
+  isFullDictionaryInstalledForLanguage,
+  retryFailedBundledPacks,
   type AllLanguagesBundleInstallProgress,
   type BundledPackDefinition,
+  type BundledPackFailure,
+  type BundledPackSkipped,
   type InstalledBundledPackStatus,
   type LanguageBundleInstallProgress,
 } from '../../core/bundledPacks';
@@ -75,6 +80,7 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
   const [installedBundlesMap, setInstalledBundlesMap] = useState<
     Record<string, InstalledBundledPackStatus>
   >({});
+  const [coveredPackIds, setCoveredPackIds] = useState<Set<string>>(new Set());
   const [isLoading, setIsLoading] = useState(true);
   const [manifestData, setManifestData] = useState<CloudPackManifest | null>(null);
 
@@ -84,6 +90,10 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
     Record<string, LanguageBundleInstallProgress | null>
   >({});
   const [errorByLang, setErrorByLang] = useState<Record<string, string | null>>({});
+  const [failedPacksByLang, setFailedPacksByLang] = useState<Record<string, BundledPackFailure[]>>({});
+  const [langNoticesByLang, setLangNoticesByLang] = useState<
+    Record<string, { skipped: BundledPackSkipped[]; warnings: string[] }>
+  >({});
   const [confirmRemoveLang, setConfirmRemoveLang] = useState<string | null>(null);
   const [removingLang, setRemovingLang] = useState<string | null>(null);
   const abortControllersRef = useRef<Record<string, AbortController>>({});
@@ -93,6 +103,10 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
     useState<AllLanguagesBundleInstallProgress | null>(null);
   const [batchAllError, setBatchAllError] = useState<string | null>(null);
   const [batchAllNotice, setBatchAllNotice] = useState<string | null>(null);
+  const [failedBatchPacks, setFailedBatchPacks] = useState<BundledPackFailure[]>([]);
+  const [batchSkippedPacks, setBatchSkippedPacks] = useState<BundledPackSkipped[]>([]);
+  const [batchWarnings, setBatchWarnings] = useState<string[]>([]);
+  const [overwriteManualImports, setOverwriteManualImports] = useState(false);
   const batchAllAbortRef = useRef<AbortController | null>(null);
 
   // Developer drawer state
@@ -113,6 +127,35 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
         setBundledPacks(effectiveBundle.packs);
         setRemovedDefaultIds(effectiveBundle.removedDefaultIds);
         setInstalledBundlesMap(installedBundles);
+
+        const covered = new Set<string>();
+        const fullDictByLang: Record<string, boolean> = {};
+        const bundleLangIds = Array.from(new Set(effectiveBundle.packs.map((bp) => bp.languageId)));
+        await Promise.all(
+          bundleLangIds.map(async (langId) => {
+            const res = await isFullDictionaryInstalledForLanguage(langId).catch(() => ({
+              installed: false,
+            }));
+            fullDictByLang[langId] = res.installed;
+          })
+        );
+        await Promise.all(
+          effectiveBundle.packs.map(async (bp) => {
+            if (installedBundles[bp.id]) {
+              covered.add(bp.id);
+              return;
+            }
+            if (bp.category === 'common-dict' && fullDictByLang[bp.languageId]) {
+              covered.add(bp.id);
+              return;
+            }
+            const manualDup = await findManualDuplicateForPack(bp).catch(() => null);
+            if (manualDup) {
+              covered.add(bp.id);
+            }
+          })
+        );
+        setCoveredPackIds(covered);
 
         const groupedAssets: Record<string, DownloadedPackAsset[]> = {};
         for (const a of allAssets) {
@@ -197,7 +240,8 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
 
   const handleInstallLanguageBundle = async (
     langId: string,
-    mode: 'auto' | 'cloud-strict' | 'starter' = 'auto'
+    mode: 'auto' | 'cloud-strict' | 'starter' = 'auto',
+    overwriteOverride?: boolean
   ) => {
     const existingCtrl = abortControllersRef.current[langId];
     if (existingCtrl) existingCtrl.abort();
@@ -208,6 +252,7 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
     const langBundles = bundledPacks.filter((p) => p.languageId === langId);
     const firstPack = langBundles[0];
     setErrorByLang((prev) => ({ ...prev, [langId]: null }));
+    setFailedPacksByLang((prev) => ({ ...prev, [langId]: [] }));
     if (firstPack) {
       setBundleProgressByLang((prev) => ({
         ...prev,
@@ -223,9 +268,10 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
     }
 
     try {
-      await installAllIncludedPacksForLanguage(langId, {
+      const res = await installAllIncludedPacksForLanguage(langId, {
         signal: controller.signal,
         mode,
+        overwriteManualImports: overwriteOverride ?? overwriteManualImports,
         onProgress: (prog) => {
           setBundleProgressByLang((prev) => ({ ...prev, [langId]: prog }));
         },
@@ -235,6 +281,22 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
       await loadPackStates(false);
       onPacksChanged?.();
       setBundleProgressByLang((prev) => ({ ...prev, [langId]: null }));
+
+      setFailedPacksByLang((prev) => ({ ...prev, [langId]: res.failedPacks }));
+      setLangNoticesByLang((prev) => ({
+        ...prev,
+        [langId]: { skipped: res.skippedPacks, warnings: res.warnings },
+      }));
+
+      if (res.failedPacks.length > 0) {
+        const okCount = res.installedCount + res.skippedPacks.length;
+        setErrorByLang((prev) => ({
+          ...prev,
+          [langId]: `${okCount} of ${res.totalPacks} installed. ${res.failedPacks.length} failed: ${res.failedPacks
+            .map((f) => f.error)
+            .join(' • ')}`,
+        }));
+      }
     } catch (err: any) {
       setBundleProgressByLang((prev) => ({ ...prev, [langId]: null }));
       if (!isAbortError(err)) {
@@ -248,13 +310,86 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
     }
   };
 
-  const handleInstallAllAvailableLanguages = async () => {
+  const handleRetryLanguageFailed = async (langId: string) => {
+    const failures = failedPacksByLang[langId] || [];
+    if (failures.length === 0) {
+      await handleInstallLanguageBundle(langId, 'auto');
+      return;
+    }
+
+    const existingCtrl = abortControllersRef.current[langId];
+    if (existingCtrl) existingCtrl.abort();
+    const controller = new AbortController();
+    abortControllersRef.current[langId] = controller;
+
+    setErrorByLang((prev) => ({ ...prev, [langId]: null }));
+    setBundleProgressByLang((prev) => ({
+      ...prev,
+      [langId]: {
+        languageId: langId,
+        currentIndex: 1,
+        totalCount: failures.length,
+        currentPack: failures[0].pack,
+        percent: 5,
+        stage: `Retrying 1 of ${failures.length}: ${failures[0].pack.title}...`,
+      },
+    }));
+
+    try {
+      const res = await retryFailedBundledPacks(failures, {
+        signal: controller.signal,
+        mode: 'auto',
+        overwriteManualImports,
+        onProgress: ({ completed, total, currentTitle }) => {
+          setBundleProgressByLang((prev) => ({
+            ...prev,
+            [langId]: {
+              languageId: langId,
+              currentIndex: Math.min(total, completed + 1),
+              totalCount: total,
+              currentPack: failures[Math.min(failures.length - 1, completed)].pack,
+              percent: Math.max(5, Math.round((completed / Math.max(1, total)) * 100)),
+              stage: `Retrying ${Math.min(total, completed + 1)} of ${total}: ${currentTitle}...`,
+            },
+          }));
+        },
+      });
+
+      await refreshInstalledLanguages();
+      await loadPackStates(false);
+      onPacksChanged?.();
+      setBundleProgressByLang((prev) => ({ ...prev, [langId]: null }));
+      setFailedPacksByLang((prev) => ({ ...prev, [langId]: res.failedPacks }));
+
+      if (res.failedPacks.length > 0) {
+        setErrorByLang((prev) => ({
+          ...prev,
+          [langId]: `${res.summaryText} (${res.failedPacks.map((f) => f.error).join(' • ')})`,
+        }));
+      }
+    } catch (err: any) {
+      setBundleProgressByLang((prev) => ({ ...prev, [langId]: null }));
+      if (!isAbortError(err)) {
+        setErrorByLang((prev) => ({
+          ...prev,
+          [langId]: err?.message || 'Retry failed.',
+        }));
+      }
+    } finally {
+      delete abortControllersRef.current[langId];
+    }
+  };
+
+  const handleInstallAllAvailableLanguages = async (overwriteOverride?: boolean) => {
     if (batchAllAbortRef.current) batchAllAbortRef.current.abort();
     const controller = new AbortController();
     batchAllAbortRef.current = controller;
 
     setBatchAllError(null);
     setBatchAllNotice(null);
+    setFailedBatchPacks([]);
+    setBatchSkippedPacks([]);
+    setBatchWarnings([]);
 
     const firstLangPack = allPacks.find((p) =>
       bundledPacks.some((bp) => bp.languageId === p.id)
@@ -285,6 +420,7 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
       const res = await installAllAvailableLanguagePacks({
         signal: controller.signal,
         mode: 'auto',
+        overwriteManualImports: overwriteOverride ?? overwriteManualImports,
         onProgress: (prog) => {
           setBatchAllProgress(prog);
         },
@@ -293,13 +429,98 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
       await loadPackStates(false);
       onPacksChanged?.();
       setBatchAllProgress(null);
-      setBatchAllNotice(
-        `Installed ${res.totalPacksInstalled} packs across ${res.languagesInstalled.length} languages (${res.totalEntries.toLocaleString()} entries).`
-      );
+
+      setFailedBatchPacks(res.failedPacks);
+      setBatchSkippedPacks(res.skippedPacks);
+      setBatchWarnings(res.warnings);
+
+      if (res.failedPacks.length > 0) {
+        setBatchAllError(res.summaryText);
+        // Also populate per-lang failure maps for affected languages
+        const byLang: Record<string, BundledPackFailure[]> = {};
+        for (const f of res.failedPacks) {
+          if (!byLang[f.languageId]) byLang[f.languageId] = [];
+          byLang[f.languageId].push(f);
+        }
+        setFailedPacksByLang((prev) => ({ ...prev, ...byLang }));
+      } else {
+        setBatchAllNotice(res.summaryText);
+      }
     } catch (err: any) {
       setBatchAllProgress(null);
       if (!isAbortError(err)) {
         setBatchAllError(err?.message || 'Batch installation failed. Please retry.');
+      }
+    } finally {
+      batchAllAbortRef.current = null;
+    }
+  };
+
+  const handleRetryBatchFailed = async () => {
+    if (failedBatchPacks.length === 0) return;
+    if (batchAllAbortRef.current) batchAllAbortRef.current.abort();
+    const controller = new AbortController();
+    batchAllAbortRef.current = controller;
+
+    setBatchAllError(null);
+    setBatchAllNotice(null);
+
+    const failures = failedBatchPacks;
+    setBatchAllProgress({
+      languageIndex: 1,
+      totalLanguages: 1,
+      currentLanguageId: failures[0].languageId,
+      languageProgress: {
+        languageId: failures[0].languageId,
+        currentIndex: 1,
+        totalCount: failures.length,
+        currentPack: failures[0].pack,
+        percent: 5,
+        stage: `Retrying 1 of ${failures.length}: ${failures[0].pack.title}...`,
+      },
+      overallPercent: 5,
+      stage: `Retrying ${failures.length} failed pack(s)...`,
+    });
+
+    try {
+      const res = await retryFailedBundledPacks(failures, {
+        signal: controller.signal,
+        mode: 'auto',
+        overwriteManualImports,
+        onProgress: ({ completed, total, currentTitle }) => {
+          const pct = Math.max(5, Math.round((completed / Math.max(1, total)) * 100));
+          setBatchAllProgress({
+            languageIndex: 1,
+            totalLanguages: 1,
+            currentLanguageId: failures[Math.min(failures.length - 1, completed)].languageId,
+            languageProgress: {
+              languageId: failures[Math.min(failures.length - 1, completed)].languageId,
+              currentIndex: Math.min(total, completed + 1),
+              totalCount: total,
+              currentPack: failures[Math.min(failures.length - 1, completed)].pack,
+              percent: pct,
+              stage: `Retrying ${Math.min(total, completed + 1)} of ${total}: ${currentTitle}...`,
+            },
+            overallPercent: pct,
+            stage: `Retrying ${Math.min(total, completed + 1)} of ${total}: ${currentTitle}...`,
+          });
+        },
+      });
+      await refreshInstalledLanguages();
+      await loadPackStates(false);
+      onPacksChanged?.();
+      setBatchAllProgress(null);
+      setFailedBatchPacks(res.failedPacks);
+
+      if (res.failedPacks.length > 0) {
+        setBatchAllError(res.summaryText);
+      } else {
+        setBatchAllNotice(res.summaryText);
+      }
+    } catch (err: any) {
+      setBatchAllProgress(null);
+      if (!isAbortError(err)) {
+        setBatchAllError(err?.message || 'Retry failed.');
       }
     } finally {
       batchAllAbortRef.current = null;
@@ -326,6 +547,12 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
     setRemovingLang(langId);
     setConfirmRemoveLang(null);
     setErrorByLang((prev) => ({ ...prev, [langId]: null }));
+    setFailedPacksByLang((prev) => ({ ...prev, [langId]: [] }));
+    setLangNoticesByLang((prev) => {
+      const next = { ...prev };
+      delete next[langId];
+      return next;
+    });
     try {
       await removeLanguagePack(langId);
       if (activeLanguageId === langId) {
@@ -400,7 +627,28 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
     }));
   };
 
-  const installedLangCount = Object.keys(installedMap).length;
+  const packStatuses = allPacks.map((pack) => {
+    const installed = installedMap[pack.id];
+    const langBundledPacks = bundledPacks.filter((bp) => bp.languageId === pack.id);
+    const installedSubCount = langBundledPacks.filter(
+      (bp) => Boolean(installedBundlesMap[bp.id]) || coveredPackIds.has(bp.id)
+    ).length;
+    const allIncludedReady =
+      langBundledPacks.length > 0 && installedSubCount === langBundledPacks.length;
+    const isInstalled = Boolean(installed) || allIncludedReady;
+    const isPartial = !allIncludedReady && installed?.status === 'partial';
+    return {
+      pack,
+      installed,
+      langBundledPacks,
+      installedSubCount,
+      isInstalled,
+      isPartial,
+    };
+  });
+
+  const installedLangCount = packStatuses.filter((s) => s.isInstalled && !s.isPartial).length;
+  const partialLangCount = packStatuses.filter((s) => s.isPartial).length;
   const anyLanguageBusy =
     Boolean(batchAllProgress) ||
     Object.values(progressByLang).some(Boolean) ||
@@ -415,7 +663,16 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
             <div className="text-xs text-[var(--text-secondary)] tabular-nums">
               <span className="font-bold text-[var(--text)]">
                 {installedLangCount} / {allPacks.length} languages installed
-              </span>{' '}
+              </span>
+              {partialLangCount > 0 && (
+                <>
+                  {' '}
+                  <span aria-hidden="true">·</span>{' '}
+                  <span className="font-semibold text-amber-600 dark:text-amber-400">
+                    {partialLangCount} partially installed
+                  </span>
+                </>
+              )}{' '}
               <span aria-hidden="true">·</span>{' '}
               <span>{bundledPacks.length} included packs ready</span>
             </div>
@@ -432,7 +689,7 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
             ) : (
               <button
                 type="button"
-                onClick={handleInstallAllAvailableLanguages}
+                onClick={() => handleInstallAllAvailableLanguages()}
                 disabled={anyLanguageBusy || bundledPacks.length === 0}
                 data-testid="install-all-languages-btn"
                 className="min-h-[38px] px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 shadow-xs shrink-0 transition active:scale-[0.99]"
@@ -478,19 +735,101 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
           )}
 
           {batchAllError && (
-            <div className="flex items-center justify-between gap-2 text-[11px] text-rose-700 dark:text-rose-300 font-medium">
-              <span className="inline-flex items-center gap-1.5">
-                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                {batchAllError}
-              </span>
-              <button
-                type="button"
-                onClick={() => setBatchAllError(null)}
-                className="text-[var(--text-muted)] hover:text-[var(--text)]"
-                aria-label="Dismiss error"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
+            <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 space-y-2 text-[11px] text-rose-700 dark:text-rose-300">
+              <div className="flex items-start justify-between gap-2 font-semibold">
+                <span className="inline-flex items-start gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>{batchAllError}</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBatchAllError(null);
+                    setFailedBatchPacks([]);
+                  }}
+                  className="text-[var(--text-muted)] hover:text-[var(--text)] shrink-0"
+                  aria-label="Dismiss error"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              {failedBatchPacks.length > 0 && (
+                <div className="space-y-1.5 pl-5">
+                  <ul className="space-y-1 text-[10px] list-disc pl-3">
+                    {failedBatchPacks.map((f) => (
+                      <li key={f.pack.id} className="break-words">
+                        {f.error}
+                      </li>
+                    ))}
+                  </ul>
+                  <button
+                    type="button"
+                    onClick={handleRetryBatchFailed}
+                    disabled={anyLanguageBusy}
+                    data-testid="retry-failed-batch-btn"
+                    className="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white text-[11px] font-bold inline-flex items-center gap-1.5"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>Retry Failed ({failedBatchPacks.length})</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {batchSkippedPacks.length > 0 && (() => {
+            const skippedLangNames = Array.from(
+              new Set(
+                batchSkippedPacks.map((s) => {
+                  const lang = allPacks.find((p) => p.id === s.pack.languageId);
+                  return lang?.name || s.pack.languageId;
+                })
+              )
+            );
+            const skippedLangsLabel = skippedLangNames.join(', ');
+            const readyVerb = skippedLangNames.length === 1 ? 'is' : 'are';
+            const manualSkipped = batchSkippedPacks.filter((s) => s.reason === 'manual-duplicate');
+
+            return (
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1.5 text-[11px] text-emerald-700 dark:text-emerald-300 font-medium">
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                  <span>
+                    {skippedLangsLabel} {readyVerb} ready. Your imported data already covers the included packs.
+                  </span>
+                </div>
+
+                {developerMode && (
+                  <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 flex flex-col sm:flex-row sm:items-start justify-between gap-2 text-[11px] text-amber-800 dark:text-amber-300">
+                    <ul className="space-y-0.5 list-disc pl-4 leading-snug">
+                      {batchSkippedPacks.map((s) => (
+                        <li key={s.pack.id}>{s.details}</li>
+                      ))}
+                    </ul>
+                    {manualSkipped.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOverwriteManualImports(true);
+                          handleInstallAllAvailableLanguages(true);
+                        }}
+                        disabled={anyLanguageBusy}
+                        className="px-2.5 py-1 rounded-lg border border-amber-400 dark:border-amber-700 bg-[var(--surface)] font-bold shrink-0 hover:bg-amber-100 dark:hover:bg-amber-900/40"
+                      >
+                        Install anyway (overwrite manual)
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {batchWarnings.length > 0 && (
+            <div className="p-2 rounded-xl bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-800/60 text-[10px] text-amber-800 dark:text-amber-300 space-y-0.5">
+              {batchWarnings.map((w, idx) => (
+                <div key={idx}>{w}</div>
+              ))}
             </div>
           )}
         </div>
@@ -508,9 +847,7 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
             compact ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
           }`}
         >
-          {allPacks.map((pack) => {
-            const installed = installedMap[pack.id];
-            const isInstalled = Boolean(installed);
+          {packStatuses.map(({ pack, installed, langBundledPacks, installedSubCount, isInstalled, isPartial }) => {
             const manifestItem = manifestData?.packs?.[pack.id];
             const updateAvailable = checkPackUpdateAvailable(installed, manifestItem?.version);
             const isActive = activeLanguageId === pack.id;
@@ -520,14 +857,12 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
               ? { percent: bundleProgress.percent, stage: bundleProgress.stage }
               : singleProgress;
             const errorMsg = errorByLang[pack.id];
+            const langFailures = failedPacksByLang[pack.id] || [];
+            const langNotice = langNoticesByLang[pack.id];
             const isConfirmingRemove = confirmRemoveLang === pack.id;
             const isRemoving = removingLang === pack.id;
             const devOpen = Boolean(expandedDevLang[pack.id]);
 
-            const langBundledPacks = bundledPacks.filter((bp) => bp.languageId === pack.id);
-            const installedSubCount = langBundledPacks.filter((bp) =>
-              Boolean(installedBundlesMap[bp.id])
-            ).length;
             const uninstalledSubCount = langBundledPacks.length - installedSubCount;
             const categorySummary = langBundledPacks
               .map((bp) => SHORT_CATEGORY_NAMES[bp.category] || BUNDLED_PACK_CATEGORY_LABELS[bp.category])
@@ -544,6 +879,8 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
               ? `Installing · ${activeProgress.percent}%`
               : updateAvailable
               ? 'Update Available'
+              : isPartial
+              ? 'Partially installed'
               : isInstalled
               ? 'Installed'
               : 'Not Installed';
@@ -553,6 +890,9 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
               ...(installed?.subpacks || []),
               ...installedAssetsForPack.map((a) => a.assetId),
             ]);
+            const skippedForLang = langNotice?.skipped || [];
+            const manualSkippedForLang =
+              skippedForLang.filter((s) => s.reason === 'manual-duplicate');
 
             return (
               <div
@@ -594,14 +934,17 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
                       className={`inline-flex items-center gap-1 font-semibold ${
                         activeProgress
                           ? 'text-indigo-600 dark:text-indigo-400'
-                          : updateAvailable
+                          : updateAvailable || isPartial
                           ? 'text-amber-600 dark:text-amber-400'
                           : isInstalled
                           ? 'text-emerald-600 dark:text-emerald-400'
                           : 'text-[var(--text-muted)]'
                       }`}
                     >
-                      {isInstalled && !activeProgress && !updateAvailable && (
+                      {isPartial && !activeProgress && !updateAvailable && (
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      )}
+                      {isInstalled && !isPartial && !activeProgress && !updateAvailable && (
                         <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
                       )}
                       <span>{statusText}</span>
@@ -647,14 +990,59 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
                     </div>
                   )}
 
+                  {/* Skipped / Covered / Warning Info */}
+                  {(skippedForLang.length > 0 || (langNotice?.warnings.length || 0) > 0) && (
+                    <div className="space-y-1 text-[10px]">
+                      {skippedForLang.length > 0 && (
+                        <div className="space-y-1.5">
+                          <div className="text-[11px] text-emerald-700 dark:text-emerald-300 font-medium leading-snug">
+                            {pack.name} is ready. Your imported data already covers the included packs.
+                          </div>
+                          {developerMode && (
+                            <div className="p-2 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 space-y-1">
+                              <ul className="space-y-0.5 list-disc pl-3.5">
+                                {skippedForLang.map((s) => (
+                                  <li key={s.pack.id}>{s.details}</li>
+                                ))}
+                              </ul>
+                              {manualSkippedForLang.length > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleInstallLanguageBundle(pack.id, 'auto', true)}
+                                  className="font-bold underline"
+                                >
+                                  Install anyway (overwrite manual)
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {langNotice?.warnings.map((w, idx) => (
+                        <div key={idx} className="text-amber-700 dark:text-amber-300">
+                          {w}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   {/* Clear Error + Retry (+ Offline Starter option) */}
                   {errorMsg && (
                     <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 text-[11px] text-rose-700 dark:text-rose-300 space-y-2">
                       <div className="flex items-start gap-1.5">
                         <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                        <span className="leading-snug">{errorMsg}</span>
+                        <span className="leading-snug break-words">{errorMsg}</span>
                       </div>
-                      <div className="flex items-center gap-3 font-bold">
+                      <div className="flex flex-wrap items-center gap-3 font-bold">
+                        {langFailures.length > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => handleRetryLanguageFailed(pack.id)}
+                            className="underline"
+                          >
+                            Retry Failed ({langFailures.length})
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           onClick={() =>
@@ -664,7 +1052,7 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
                           }
                           className="underline"
                         >
-                          Retry
+                          {langFailures.length > 0 ? 'Retry All' : 'Retry'}
                         </button>
                         <button
                           type="button"
@@ -791,7 +1179,9 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
                         >
                           <DownloadCloud className="w-3.5 h-3.5 shrink-0" />
                           <span>
-                            Install All Included Packs ({langBundledPacks.length})
+                            {isPartial
+                              ? `Finish Installing Packs (${uninstalledSubCount} left)`
+                              : `Install All Included Packs (${langBundledPacks.length})`}
                           </span>
                         </button>
                       )}
@@ -925,7 +1315,7 @@ export const LanguagePackManagerGrid: React.FC<LanguagePackManagerGridProps> = (
         </div>
       )}
 
-      {/* Developer Options: Included Packs Registry (Add, Remove, Restore Defaults) */}
+      {/* Developer Options: Included Packs Registry (Add, Remove, Restore Defaults, Pack Check) */}
       {!isLoading && developerMode && (
         <DeveloperPackRegistryPanel
           packs={bundledPacks}

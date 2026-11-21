@@ -1,4 +1,3 @@
-import JSZip from 'jszip';
 import {
   db,
   deleteJmdictInBatches,
@@ -14,6 +13,12 @@ import { deriveFrequencyInfo } from '../packs/japanese/jmdictFrequency';
 import { buildMandarinPinyinSegments, invalidateMandarinLexiconCache } from '../packs/multilingualPack';
 import { mapFrequencyRankToLevel } from './languagePack';
 import { logEvent } from './eventLogger';
+import {
+  PackLoadError,
+  decompressGzipBytesToText,
+  detectAndDecodePackContent,
+  isGzipBytes,
+} from './packFormatDetector';
 
 export const DEFAULT_PACK_MANIFEST_URL =
   'https://cdn.jsdelivr.net/gh/Diver-ag/linguaforge-packs@v2.1/packs/manifest.json';
@@ -145,7 +150,7 @@ export async function getInstalledPacksMap(): Promise<Record<string, InstalledLa
 export async function getInstalledLanguageIds(): Promise<string[]> {
   const map = await getInstalledPacksMap();
   const registryIds = getAllLanguagePacks().map((p) => p.id);
-  const installed = registryIds.filter((id) => Boolean(map[id]));
+  const installed = registryIds.filter((id) => Boolean(map[id]) && map[id].status !== 'partial');
   if (installed.length === 0) {
     return ['ja'];
   }
@@ -210,6 +215,103 @@ export interface RawPackEntryInput {
   level?: string;
   frequencyRank?: number;
   aliases?: string[];
+  priorityTags?: string[];
+}
+
+function extractJmdictSimplifiedItem(obj: Record<string, any>): RawPackEntryInput | null {
+  const kanjiArr = Array.isArray(obj.kanji) ? obj.kanji : [];
+  const kanaArr = Array.isArray(obj.kana) ? obj.kana : [];
+  const senseArr = Array.isArray(obj.sense) ? obj.sense : [];
+
+  const kanjiItems = kanjiArr
+    .map((k: any) => ({
+      text: String(k?.text ?? '').trim(),
+      common: Boolean(k?.common),
+      tags: Array.isArray(k?.tags) ? k.tags.map((t: any) => String(t).trim()).filter(Boolean) : [],
+    }))
+    .filter((k: { text: string }) => Boolean(k.text));
+
+  const kanaItems = kanaArr
+    .map((k: any) => ({
+      text: String(k?.text ?? '').trim(),
+      common: Boolean(k?.common),
+      tags: Array.isArray(k?.tags) ? k.tags.map((t: any) => String(t).trim()).filter(Boolean) : [],
+    }))
+    .filter((k: { text: string }) => Boolean(k.text));
+
+  const commonKanji = kanjiItems.find((k: { common: boolean }) => k.common);
+  const commonKana = kanaItems.find((k: { common: boolean }) => k.common);
+  const word = commonKanji?.text || kanjiItems[0]?.text || commonKana?.text || kanaItems[0]?.text || '';
+  if (!word) return null;
+
+  const readings = Array.from(new Set(kanaItems.map((k: { text: string }) => k.text)));
+  const aliases = Array.from(
+    new Set([
+      ...kanjiItems.map((k: { text: string }) => k.text),
+      ...kanaItems.map((k: { text: string }) => k.text),
+    ])
+  ).filter((a) => a !== word);
+
+  const meaningsSet = new Set<string>();
+  const posSet = new Set<string>();
+
+  for (const s of senseArr) {
+    if (!s || typeof s !== 'object') continue;
+    const rawPos = Array.isArray(s.partOfSpeech)
+      ? s.partOfSpeech
+      : typeof s.partOfSpeech === 'string'
+      ? [s.partOfSpeech]
+      : [];
+    for (const p of rawPos) {
+      const cleanP = String(p).trim();
+      if (cleanP) posSet.add(cleanP);
+    }
+
+    if (Array.isArray(s.gloss)) {
+      for (const g of s.gloss) {
+        if (typeof g === 'string') {
+          const txt = g.trim();
+          if (txt) meaningsSet.add(txt);
+        } else if (g && typeof g === 'object') {
+          const lang = g.lang || g['xml:lang'];
+          if (lang && lang !== 'eng' && lang !== 'en') {
+            continue;
+          }
+          const txt = String(g.text ?? g.$ ?? '').trim();
+          if (txt) meaningsSet.add(txt);
+        }
+      }
+    }
+  }
+
+  const meanings = Array.from(meaningsSet);
+  if (meanings.length === 0) {
+    return null;
+  }
+
+  const tagsSet = new Set<string>();
+  let anyCommon = false;
+  for (const k of kanjiItems) {
+    if (k.common) anyCommon = true;
+    for (const t of k.tags) tagsSet.add(t);
+  }
+  for (const k of kanaItems) {
+    if (k.common) anyCommon = true;
+    for (const t of k.tags) tagsSet.add(t);
+  }
+  if (anyCommon && tagsSet.size === 0) {
+    tagsSet.add('spec1');
+  }
+
+  return {
+    id: obj.id !== undefined ? String(obj.id) : undefined,
+    word,
+    readings,
+    meanings,
+    partsOfSpeech: posSet.size > 0 ? Array.from(posSet) : undefined,
+    aliases: aliases.length > 0 ? aliases : undefined,
+    priorityTags: tagsSet.size > 0 ? Array.from(tagsSet) : undefined,
+  };
 }
 
 export function normalizeRawPackItem(
@@ -218,6 +320,11 @@ export function normalizeRawPackItem(
 ): RawPackEntryInput | null {
   if (!item || typeof item !== 'object') return null;
   const obj = item as Record<string, any>;
+
+  // Handle jmdict-simplified word objects ({ kanji: [{text}], kana: [{text}], sense: [{gloss: [{lang:'eng', text}]}] })
+  if (Array.isArray(obj.kanji) || Array.isArray(obj.kana) || Array.isArray(obj.sense)) {
+    return extractJmdictSimplifiedItem(obj);
+  }
 
   const word = String(obj.w ?? obj.word ?? obj.term ?? obj.headword ?? '').trim();
   if (!word) return null;
@@ -329,10 +436,17 @@ export function normalizeEntriesToJmdictItems(
       typeof raw.frequencyRank === 'number' && Number.isFinite(raw.frequencyRank)
         ? raw.frequencyRank
         : undefined;
-    const freqInfo = deriveFrequencyInfo([], freqRank);
-    const priorityScore = freqRank ? Math.max(10, 10000 - Math.min(9990, freqRank)) : 100;
-    const resolvedLevel = raw.level || mapFrequencyRankToLevel(languageId, freqRank);
-    const isCommon = freqRank !== undefined ? freqRank <= 2500 : true;
+    const priorityTags = Array.isArray(raw.priorityTags) ? raw.priorityTags : [];
+    const freqInfo = deriveFrequencyInfo(priorityTags, freqRank);
+    const resolvedRank = freqRank ?? freqInfo.frequencyRank;
+    const priorityScore = resolvedRank
+      ? Math.max(freqInfo.priorityScore, Math.max(10, 10000 - Math.min(9990, resolvedRank)))
+      : Math.max(100, freqInfo.priorityScore);
+    const resolvedLevel = raw.level || mapFrequencyRankToLevel(languageId, resolvedRank);
+    const isCommon =
+      resolvedRank !== undefined
+        ? resolvedRank <= 2500
+        : priorityTags.length > 0 || true;
     const kanjiList = raw.traditionalForm
       ? [
           { text: word, common: isCommon },
@@ -355,9 +469,9 @@ export function normalizeEntriesToJmdictItems(
       primaryWord: word,
       primaryReading: readings[0] || '',
       priorityScore,
-      priorityTags: [],
+      priorityTags,
       frequencyBand: freqInfo.frequencyBand,
-      frequencyRank: freqRank,
+      frequencyRank: resolvedRank,
       jlptLevel: resolvedLevel,
       importIds: [importId],
       kinds: [kind],
@@ -366,19 +480,7 @@ export function normalizeEntriesToJmdictItems(
   return out;
 }
 
-export function isGzipBytes(bytes: Uint8Array): boolean {
-  return bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
-}
-
-export async function decompressGzipBytesToText(bytes: Uint8Array): Promise<string> {
-  if (typeof DecompressionStream === 'undefined') {
-    throw new Error('Gzip decompression (DecompressionStream) is not supported in this browser.');
-  }
-  const sliced = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-  const ds = new DecompressionStream('gzip');
-  const stream = new Blob([sliced]).stream().pipeThrough(ds);
-  return await new Response(stream).text();
-}
+export { isGzipBytes, decompressGzipBytesToText };
 
 export interface ExtractedPackData {
   entries: RawPackEntryInput[];
@@ -418,7 +520,10 @@ function normalizeFormsMap(rawForms: unknown): Record<string, string[]> {
   return out;
 }
 
-export function extractRawPackDataFromParsedJson(parsed: unknown): ExtractedPackData {
+export function extractRawPackDataFromParsedJson(
+  parsed: unknown,
+  maxRows?: number
+): ExtractedPackData {
   let rawArray: unknown[] | null = null;
   let forms: Record<string, string[]> = {};
 
@@ -432,6 +537,25 @@ export function extractRawPackDataFromParsedJson(parsed: unknown): ExtractedPack
       rawArray = obj.words;
     } else if (Array.isArray(obj.items)) {
       rawArray = obj.items;
+    } else if (Array.isArray(obj.kanji) || Array.isArray(obj.kana) || Array.isArray(obj.sense)) {
+      rawArray = [obj];
+    } else if (obj.forms && typeof obj.forms === 'object' && !Array.isArray(obj.forms)) {
+      rawArray = [];
+    } else {
+      // Plain dictionary map { word: definition | { meanings, readings } }
+      const mapped: unknown[] = [];
+      for (const [k, v] of Object.entries(obj)) {
+        if (k === 'version' || k === 'manifestVersion' || k === 'languages') continue;
+        if (typeof v === 'string') {
+          mapped.push({ word: k, meanings: [v] });
+        } else if (v && typeof v === 'object' && !Array.isArray(v)) {
+          mapped.push({ word: k, ...v });
+        }
+        if (maxRows !== undefined && mapped.length >= maxRows) break;
+      }
+      if (mapped.length > 0) {
+        rawArray = mapped;
+      }
     }
     if (obj.forms && typeof obj.forms === 'object') {
       forms = normalizeFormsMap(obj.forms);
@@ -445,7 +569,10 @@ export function extractRawPackDataFromParsedJson(parsed: unknown): ExtractedPack
   const out: RawPackEntryInput[] = [];
   for (const item of rawArray) {
     const normalized = normalizeRawPackItem(item);
-    if (normalized) out.push(normalized);
+    if (normalized) {
+      out.push(normalized);
+      if (maxRows !== undefined && out.length >= maxRows) break;
+    }
   }
   return { entries: out, forms };
 }
@@ -479,11 +606,17 @@ async function streamAndParseCloudBundle(
   bundleUrl: string,
   expectedTotalBytes?: number,
   signal?: AbortSignal,
-  onProgress?: (p: PackInstallProgress) => void
+  onProgress?: (p: PackInstallProgress) => void,
+  packTitle = 'Cloud Language Pack'
 ): Promise<ExtractedPackData> {
   const res = await fetch(bundleUrl, { signal });
   if (!res.ok) {
-    throw new Error(`HTTP ${res.status} while downloading pack bundle`);
+    throw new PackLoadError({
+      packTitle,
+      filePath: bundleUrl,
+      httpStatus: res.status,
+      reason: res.status === 404 ? `File not found on server: ${bundleUrl}` : `HTTP ${res.status} ${res.statusText || 'download error'}`,
+    });
   }
 
   const totalHeader = Number(res.headers.get('content-length') || 0) || expectedTotalBytes || 0;
@@ -529,24 +662,39 @@ async function streamAndParseCloudBundle(
   throwIfAborted(signal);
   onProgress?.({ percent: 75, stage: 'Decompressing pack...' });
 
-  let jsonText = '';
-  const lowerUrl = bundleUrl.toLowerCase();
-
-  if (lowerUrl.endsWith('.zip')) {
-    const zip = await JSZip.loadAsync(bytes);
-    const jsonName = Object.keys(zip.files).find((n) => n.endsWith('.json') && !zip.files[n].dir);
-    if (!jsonName) {
-      throw new Error('Pack archive does not contain a JSON dictionary file.');
-    }
-    jsonText = await zip.files[jsonName].async('text');
-  } else if (lowerUrl.endsWith('.gz') || isGzipBytes(bytes)) {
-    jsonText = await decompressGzipBytesToText(bytes);
-  } else {
-    jsonText = new TextDecoder().decode(bytes);
-  }
+  const detected = await detectAndDecodePackContent(bytes, {
+    packTitle,
+    filePath: bundleUrl,
+    httpStatus: res.status,
+    declaredFormat: 'json',
+  });
 
   throwIfAborted(signal);
-  const parsed = JSON.parse(jsonText);
+
+  if (detected.format === 'jsonl') {
+    const entries: RawPackEntryInput[] = [];
+    const lines = detected.text.split(/\r?\n/);
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t) continue;
+      const item = JSON.parse(t);
+      const norm = normalizeRawPackItem(item);
+      if (norm) entries.push(norm);
+    }
+    return { entries, forms: {} };
+  }
+
+  if (detected.format !== 'json') {
+    throw new PackLoadError({
+      packTitle,
+      filePath: bundleUrl,
+      httpStatus: res.status,
+      detectedFormat: detected.detectedLabel,
+      reason: `Expected JSON or JSONL vocabulary data, got ${detected.detectedLabel}.`,
+    });
+  }
+
+  const parsed = JSON.parse(detected.text);
   return extractRawPackDataFromParsedJson(parsed);
 }
 
@@ -623,7 +771,8 @@ export async function installLanguagePack(
           resolvedUrl,
           manifestEntry?.sizeBytes,
           signal,
-          onProgress
+          onProgress,
+          `${pack.name} Core Dictionary`
         );
         rawEntries = bundleData.entries;
         rawForms = bundleData.forms;

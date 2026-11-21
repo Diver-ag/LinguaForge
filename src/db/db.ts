@@ -302,6 +302,7 @@ export interface InstalledLanguagePackRecord {
   installedAt: number;
   updatedAt: number;
   source: 'starter' | 'cloud' | 'custom' | 'bundled';
+  status?: 'installed' | 'partial';
   entryCount: number;
   sizeBytes: number;
   subpacks?: string[];
